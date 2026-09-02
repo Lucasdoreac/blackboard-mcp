@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from mcp.server.fastmcp import FastMCP
+
+from .client import BlackboardClient
+from .config import Settings
+
+
+def create_server(profile: str) -> FastMCP:
+    client = BlackboardClient(Settings.from_profile(profile))
+    server = FastMCP("blackboard-mcp")
+
+    @server.tool()
+    async def auth_status() -> dict:
+        """Check whether the local Blackboard profile has a valid session."""
+        return await client.auth_status()
+
+    @server.tool()
+    async def begin_login() -> dict:
+        """Open dedicated Chrome for manual login/MFA; no credential is read by the server."""
+        return client.open_login_window()
+
+    @server.tool()
+    async def list_courses(term: str = "") -> list[dict[str, str]]:
+        """List courses available to the signed-in account, read-only."""
+        return await client.list_courses(term or None)
+
+    @server.tool()
+    async def register_course(course_id: str, title: str) -> dict:
+        """Register an owner-confirmed course that Ultra may hide from cards."""
+        return client.register_course(course_id, title)
+
+    @server.tool()
+    async def list_registered_courses() -> list[dict]:
+        """List owner-registered courses, including hidden-but-accessible ones."""
+        return client.list_registered_courses()
+
+    @server.tool()
+    async def bind_notebook(course_id: str, notebook_id: str) -> dict:
+        """Bind a registered Blackboard course to an owner-confirmed NotebookLM notebook."""
+        return client.bind_notebook(course_id, notebook_id)
+
+    @server.tool()
+    async def sync_registered_courses() -> list[dict]:
+        """Synchronize owner-registered courses only; no material is downloaded."""
+        return await client.sync_registered_courses()
+
+    @server.tool()
+    async def list_terms() -> list[str]:
+        """List Blackboard terms available to the signed-in account."""
+        return await client.list_terms()
+
+    @server.tool()
+    async def list_course_content(course_id: str) -> list[dict[str, str]]:
+        """List a course's Blackboard content records, read-only."""
+        return await client.list_course_content(course_id)
+
+    @server.tool()
+    async def list_course_tree(course_id: str) -> list[dict]:
+        """Expand folders only and return the hierarchical course inventory."""
+        return await client.list_course_tree(course_id)
+
+    @server.tool()
+    async def sync_course(course_id: str) -> dict:
+        """Snapshot a course tree locally and return additions, changes and removals."""
+        return await client.sync_course(course_id)
+
+    @server.tool()
+    async def download_content(course_id: str, content_id: str) -> dict:
+        """Download one explicit course material to private local storage; no signed URL is returned."""
+        return await client.download_content(course_id, content_id)
+
+    @server.tool()
+    async def archive_declared_pdfs(course_id: str) -> dict:
+        """Archive every inventory item explicitly declared as a PDF, idempotently."""
+        return await client.archive_declared_pdfs(course_id)
+
+    @server.tool()
+    async def read_download_chunk(course_id: str, content_id: str, offset: int, length: int) -> dict:
+        """Read a verified download in bounded blocks for a local adapter; never call from chat."""
+        return client.read_download_chunk(course_id, content_id, offset, length)
+
+    @server.tool()
+    async def list_downloads(course_id: str) -> list[dict]:
+        """List verified local download receipts without exposing filenames or paths."""
+        return client.list_downloads(course_id)
+
+    @server.tool()
+    async def list_assessments(course_id: str) -> list[dict]:
+        """List visible assessment deadlines; submission state is deliberately not inferred."""
+        return await client.list_assessments(course_id)
+
+    @server.tool()
+    async def list_announcements(course_id: str) -> list[dict]:
+        """List course announcements with full title/body text and publish date."""
+        return await client.list_announcements(course_id)
+
+    @server.tool()
+    async def sync_available_courses(term: str = "") -> list[dict]:
+        """Snapshot every available course locally; no material is opened or downloaded."""
+        return await client.sync_available_courses(term or None)
+
+    return server

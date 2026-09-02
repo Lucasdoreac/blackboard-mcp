@@ -1,0 +1,18 @@
+[Unit]
+Description=Blackboard MCP bridge for SOBER (local Unix socket only)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ludoc/dev/blackboard-mcp
+EnvironmentFile=%h/.config/blackboard-mcp/bridge.env
+Environment=PATH=/home/ludoc/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ludoc/.local/bin/uv --directory /home/ludoc/dev/blackboard-mcp run blackboard-mcp serve-http --profile sober --socket %t/blackboard-mcp/bridge.sock
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target
