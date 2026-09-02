@@ -4,33 +4,45 @@ Servidor MCP local e somente leitura para Blackboard Ultra. Ele e um produto
 independente: Codex, Claude Desktop e SOBER podem ser clientes do mesmo
 servidor, mas a sessao nunca entra no repositorio do SOBER.
 
-## Primeiro login
+## Primeiro uso
+
+Funciona com **qualquer instituicao que rode Blackboard Ultra**, nao so a do
+piloto original. Depois de instalar Python/uv (o unico passo tecnico), o
+resto e guiado:
 
 ```bash
 cd ~/dev/blackboard-mcp
-uv run blackboard-mcp login --profile sober
+uv run blackboard-mcp setup
 ```
 
-O comando abre um Chrome dedicado. Faca login e MFA nessa janela. O perfil e
-guardado localmente em `~/.local/share/blackboard-mcp/profiles/sober`, com
-permissoes restritas. Senhas, codigos MFA, cookies e URLs assinadas nunca sao
-impressos, retornados por MCP ou versionados.
+O assistente pergunta a URL do Blackboard da sua instituicao e um nome pro
+seu perfil, salva essa configuracao localmente (nunca precisa editar `.env`
+nem codigo), abre um Chrome dedicado pra voce fazer login e MFA, e confirma
+sozinho quando o login terminar. O perfil fica em
+`~/.local/share/blackboard-mcp/profiles/<nome>`, com permissoes restritas.
+Senhas, codigos MFA, cookies e URLs assinadas nunca sao impressos, retornados
+por MCP ou versionados.
 
-Verifique depois:
+Depois do `setup`, ou pra scripting/CI (sem prompt interativo), os comandos
+individuais continuam disponiveis:
 
 ```bash
-uv run blackboard-mcp auth-status --profile sober
-uv run blackboard-mcp courses --profile sober
+uv run blackboard-mcp login --profile <nome>          # so o login, sem os prompts
+uv run blackboard-mcp auth-status --profile <nome>
+uv run blackboard-mcp courses --profile <nome>
 ```
+
+Automacao/CI tambem pode pular o `setup` de vez e so exportar
+`BLACKBOARD_BASE_URL` (tem prioridade sobre a config salva pelo `setup`).
 
 Algumas disciplinas permanecem acessiveis mas o Ultra nao as exibe como
 cartoes abertos. Registre-as uma vez para que todo cliente MCP tenha o mesmo
 catalogo local:
 
 ```bash
-uv run blackboard-mcp register-course --profile sober \
+uv run blackboard-mcp register-course --profile <nome> \
   --course-id _1169577_1 --title "Linguagens Formais e Autômatos"
-uv run blackboard-mcp sync-registered --profile sober
+uv run blackboard-mcp sync-registered --profile <nome>
 ```
 
 ## MCP
@@ -44,9 +56,12 @@ No cliente MCP, execute:
 }
 ```
 
-Ferramentas: `auth_status`, `list_courses`, `list_course_content`,
-`list_course_tree`, `sync_course`, `list_assessments`, `download_content`,
-`archive_declared_pdfs` e `begin_login`. A arvore expande apenas modulos/pastas;
+Ferramentas: `auth_status`, `begin_login`, `list_courses`, `list_terms`,
+`register_course`, `list_registered_courses`, `bind_notebook`,
+`sync_registered_courses`, `sync_available_courses`, `list_course_content`,
+`list_course_tree`, `sync_course`, `list_assessments`, `list_announcements`,
+`download_content`, `archive_declared_pdfs`, `list_downloads` e
+`read_download_chunk`. A arvore expande apenas modulos/pastas;
 nao abre materiais. Elas leem a interface Ultra autenticada, pois a API publica de
 desenvolvedor requer uma credencial institucional separada. Elas nao escrevem
 no Blackboard. `download_content` so baixa um item explicitamente solicitado,
@@ -82,7 +97,9 @@ diretório do socket em `BLACKBOARD_MCP_SOCKET_DIR` e a chave em
 ## Limites de seguranca
 
 - O perfil pertence ao usuario local; nao e compartilhado entre pessoas.
-- O host Blackboard e fixo em `bb.cruzeirodosulvirtual.com.br` neste piloto.
+- O host Blackboard e configuravel por perfil (`blackboard-mcp setup`, ou a
+  variavel `BLACKBOARD_BASE_URL`) — funciona com qualquer instituicao Ultra,
+  desde que ela nao bloqueie login por navegador automatizado.
 - A API e chamada dentro do contexto autenticado do navegador. Isso evita
   copiar cookies para MCP, banco ou logs.
 - A resposta de ferramentas e sanitizada: nao devolve headers, cookies ou URL

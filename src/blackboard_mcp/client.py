@@ -144,12 +144,18 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
 
     def login_url(self) -> str:
-        """Validated entrypoint for the system Chrome login command."""
-        url = f"{self.settings.base_url}/ultra/course"
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc != "bb.cruzeirodosulvirtual.com.br":
-            raise ValueError("BLACKBOARD_BASE_URL nao e um host permitido")
-        return url
+        """Validated entrypoint for the system Chrome login command.
+
+        `base_url` is admin-configured (env var, or `blackboard-mcp setup`'s
+        persisted per-profile config), never third-party or network input —
+        so this only needs to reject a malformed value (missing scheme/host),
+        not compare against one specific institution. Any Blackboard Ultra
+        instance the person configures for their own profile is valid.
+        """
+        parsed = urlparse(self.settings.base_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("BLACKBOARD_BASE_URL invalido: use https://<host-do-blackboard>")
+        return f"{self.settings.base_url}/ultra/course"
 
     def open_login_window(self) -> dict[str, str | bool]:
         """Open the owner-visible, CDP-enabled browser used for manual reauth."""

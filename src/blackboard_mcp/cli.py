@@ -5,15 +5,78 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .client import BlackboardClient
-from .config import Settings
+from .config import Settings, save_profile_config
 from .server import create_server
+
+
+def _prompt_base_url() -> str:
+    while True:
+        raw = input("URL do Blackboard da sua instituicao (ex.: bb.suafaculdade.edu): ").strip()
+        if not raw:
+            print("  Nao pode ficar em branco.")
+            continue
+        if not raw.startswith("http://") and not raw.startswith("https://"):
+            raw = f"https://{raw}"
+        parsed = urlparse(raw)
+        if parsed.scheme != "https" or not parsed.netloc:
+            print("  Nao parece uma URL valida. Tente algo como https://bb.suafaculdade.edu")
+            continue
+        return raw.rstrip("/")
+
+
+def _prompt_profile(default: str) -> str:
+    while True:
+        raw = input(f"Nome pra esse perfil [{default}]: ").strip()
+        profile = raw or default
+        try:
+            Settings.from_profile(profile)
+        except ValueError as exc:
+            print(f"  {exc}")
+            continue
+        return profile
+
+
+async def _wait_for_login(client: BlackboardClient, timeout_s: int = 600, interval_s: int = 3) -> bool:
+    waited = 0
+    while waited < timeout_s:
+        await asyncio.sleep(interval_s)
+        waited += interval_s
+        status = await client.auth_status()
+        if status.get("authenticated"):
+            return True
+        if waited % 15 == 0:
+            print(f"  ainda aguardando o login... ({waited}s)")
+    return False
+
+
+def _run_setup(profile_hint: str) -> None:
+    print("=== Configuracao do Blackboard MCP ===\n")
+    base_url = _prompt_base_url()
+    profile = _prompt_profile(profile_hint)
+    settings = Settings.from_profile(profile)
+    save_profile_config(settings.data_home, profile, {"base_url": base_url})
+    print(f"\nConfigurado: perfil '{profile}' -> {base_url}")
+
+    client = BlackboardClient(Settings.from_profile(profile))
+    print("\nAbrindo o Chrome para voce fazer login (e MFA, se a instituicao usar)...")
+    client.open_login_window()
+    print("Assim que terminar o login na janela que abriu, eu volto a checar sozinho.\n")
+
+    if asyncio.run(_wait_for_login(client)):
+        print(f"\nLogin confirmado para o perfil '{profile}'.")
+        print("Proximo passo, pra conferir que enxerga suas disciplinas:")
+        print(f"  uv run blackboard-mcp courses --profile {profile}")
+    else:
+        print("\nNao detectei o login a tempo. Termine o login na janela e rode:")
+        print(f"  uv run blackboard-mcp auth-status --profile {profile}")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackboard-mcp")
-    parser.add_argument("command", choices=("login", "auth-status", "terms", "courses", "register-course", "registered-courses", "bind-notebook", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
+    parser.add_argument("command", choices=("setup", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "bind-notebook", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
     parser.add_argument("--profile", default="sober")
     parser.add_argument("--course-id")
     parser.add_argument("--content-id")
@@ -27,6 +90,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
+    if args.command == "setup":
+        _run_setup(args.profile)
+        return
     if args.command == "serve":
         create_server(args.profile).run()
         return
