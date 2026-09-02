@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .config import Settings
@@ -24,6 +26,39 @@ def prepare_profile(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     os.chmod(path, 0o700)
+    ensure_pdfs_download_externally(path)
+
+
+def ensure_pdfs_download_externally(profile_dir: Path) -> None:
+    """Chrome's built-in PDF viewer intercepts `application/pdf` responses to
+    render them inline; when it does, what Playwright's `response.body()`
+    captures for that same response is not reliably the raw file bytes.
+
+    Achado real (2026-09-02): 5 PDFs in one course downloaded as non-PDF
+    content (`persist_download` rejects on the missing `%PDF-` magic bytes)
+    despite a correct `application/pdf` content-type and a genuine
+    `*.content.blackboardcdn.com` host — the network layer was fine, the
+    browser's own viewer was consuming the stream. Setting this Chrome
+    preference makes the browser treat PDFs as a download instead, which
+    keeps the response Playwright observes as the untouched file.
+
+    Merges into the existing `Preferences` JSON rather than overwriting it —
+    this profile also carries the real Blackboard login session.
+    """
+    prefs_path = profile_dir / "Default" / "Preferences"
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {}
+    if prefs_path.exists():
+        try:
+            data = json.loads(prefs_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    plugins = data.setdefault("plugins", {})
+    if plugins.get("always_open_pdf_externally") is True:
+        return
+    plugins["always_open_pdf_externally"] = True
+    prefs_path.write_text(json.dumps(data), encoding="utf-8")
+    prefs_path.chmod(0o600)
 
 
 class BlackboardClient:
@@ -284,11 +319,62 @@ class BlackboardClient:
         return save_snapshot(self.settings.data_home, course_id, items)
 
     async def download_content(self, course_id: str, content_id: str) -> dict[str, str | int]:
-        """Download one owner-requested leaf item without persisting its signed URL."""
+        """Download one owner-requested leaf item without persisting its signed URL.
+
+        Dispatches by `contentHandler`: `resource/x-bb-externallink` items
+        (achado real 2026-09-02: Blackboard's own "Arquivo em PDF" material
+        type) point at a URL rather than a rendered outline element, and a
+        direct authenticated GET is both simpler and more reliable than
+        clicking through the outline — Ultra's click-and-intercept flow for
+        this content type passes through an interstitial HTML response that
+        lies about its `content-type` before the real PDF bytes ever arrive.
+        Every other content type keeps the existing click-and-intercept path.
+        """
         if not course_id.startswith("_") or not course_id.endswith("_1"):
             raise ValueError("course_id invalido")
         if not content_id.startswith("_") or not content_id.endswith("_1"):
             raise ValueError("content_id invalido")
+        item = await self._rest_get(f"/learn/api/v1/courses/{course_id}/contents/{content_id}")
+        title = str(item.get("title") or "")
+        if str(item.get("contentHandler") or "") == "resource/x-bb-externallink":
+            return await self._download_external_link(course_id, content_id, title, item)
+        return await self._download_via_playwright(course_id, content_id, title)
+
+    async def _download_external_link(
+        self, course_id: str, content_id: str, title: str, item: dict[str, Any]
+    ) -> dict[str, str | int]:
+        """Only followed when the link stays on Blackboard's own host — this
+        content type is ALSO how a professor links to a genuinely external
+        site (YouTube, an article), which must never receive our session
+        cookies nor be silently treated as an archivable file."""
+        from .downloads import MAX_DOWNLOAD_BYTES, download_dir, persist_download
+
+        detail = (item.get("contentDetail") or {}).get("resource/x-bb-externallink") or {}
+        url = str(detail.get("url") or "")
+        expected_host = (urlparse(self.settings.base_url).hostname or "").lower()
+        actual_host = (urlparse(url).hostname or "").lower()
+        if not url or not actual_host or actual_host != expected_host:
+            raise ValueError("link externo nao aponta para o proprio Blackboard; nao arquivado automaticamente")
+        async with httpx.AsyncClient(cookies=self._session._cookies, follow_redirects=True, timeout=30.0) as hc:
+            response = await hc.get(url)
+            if response.status_code >= 400:
+                raise ValueError("Blackboard recusou o link do material")
+            declared_size = response.headers.get("content-length")
+            if declared_size and declared_size.isdecimal() and int(declared_size) > MAX_DOWNLOAD_BYTES:
+                raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+            payload = response.content
+        if len(payload) > MAX_DOWNLOAD_BYTES:
+            raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+        directory = download_dir(self.settings.data_home, course_id)
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+            handle.write(payload)
+            temporary = Path(handle.name)
+        return persist_download(
+            self.settings.data_home, course_id=course_id, content_id=content_id,
+            title=title, suggested_filename=title, temporary_path=temporary,
+        )
+
+    async def _download_via_playwright(self, course_id: str, content_id: str, title: str) -> dict[str, str | int]:
         from .downloads import persist_download
 
         playwright, context, page, attached = await self._authenticated_page()
@@ -326,10 +412,11 @@ class BlackboardClient:
                     raise ValueError("rota de download fora do Blackboard nao permitida")
             elif await link.evaluate("node => node.tagName") != "BUTTON":
                 raise ValueError("item nao oferece rota de download")
-            title_node = item.locator('[id^="content-title-"], [id^="learning-module-title-"], [id^="folder-title-"]').first
-            title = (await title_node.inner_text()).strip() if await title_node.count() else ""
             if not title:
-                title = ((await item.inner_text()).split("\n")[-1]).strip()
+                title_node = item.locator('[id^="content-title-"], [id^="learning-module-title-"], [id^="folder-title-"]').first
+                title = (await title_node.inner_text()).strip() if await title_node.count() else ""
+                if not title:
+                    title = ((await item.inner_text()).split("\n")[-1]).strip()
             # Ultra renders the resource in a short-lived content-CDN frame,
             # not through a browser Download event.  Capture precisely the PDF
             # response the page receives; a second request can lose the signed

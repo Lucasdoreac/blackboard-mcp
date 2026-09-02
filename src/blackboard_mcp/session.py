@@ -19,6 +19,7 @@ browser again.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -97,19 +98,38 @@ class BlackboardSession:
             self._path.unlink()
 
     async def get(self, path: str, params: dict[str, str] | None = None) -> Any:
-        """GET one internal `/learn/api/v1/...` path; returns decoded JSON."""
+        """GET one internal `/learn/api/v1/...` path; returns decoded JSON.
+
+        A recursive tree walk fans out into dozens of these calls per
+        course; a transient connect/read blip (observed live: this host's
+        network proxy occasionally drops one request out of many) must not
+        abort the whole walk. Retried a few times with a short backoff —
+        never on 401/403/bad-JSON, which are real auth failures, not
+        network noise.
+        """
         if not self.configured:
             raise SessionStale("sessao nao configurada; faca login")
-        async with httpx.AsyncClient(base_url=self.base_url, cookies=self._cookies, timeout=15.0) as client:
-            response = await client.get(
-                path,
-                params=params,
-                headers={
-                    "X-Requested-With": "XMLHttpRequest",
-                    "X-Blackboard-XSRF": self._xsrf or "",
-                    "Accept": "application/json, text/plain, */*",
-                },
-            )
+        last_error: httpx.TransportError | None = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(base_url=self.base_url, cookies=self._cookies, timeout=15.0) as client:
+                    response = await client.get(
+                        path,
+                        params=params,
+                        headers={
+                            "X-Requested-With": "XMLHttpRequest",
+                            "X-Blackboard-XSRF": self._xsrf or "",
+                            "Accept": "application/json, text/plain, */*",
+                        },
+                    )
+                break
+            except httpx.TransportError as exc:
+                last_error = exc
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(1.5 * (attempt + 1))
+        else:
+            raise last_error  # pragma: no cover — loop always breaks or raises above
         self._absorb_rotated_cookies(response)
         if response.status_code in (401, 403):
             raise SessionStale("a sessao Blackboard foi recusada (401/403)")

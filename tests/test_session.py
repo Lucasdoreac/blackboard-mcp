@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -92,6 +93,49 @@ async def test_get_raises_session_stale_on_401(tmp_path: Path, monkeypatch: pyte
     _mock_transport(monkeypatch, handler)
     with pytest.raises(SessionStale):
         await session.get("/learn/api/v1/users/me")
+
+
+@pytest.mark.asyncio
+async def test_get_retries_a_transient_connect_timeout_and_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Revert-check target: a recursive tree walk fans out into dozens of
+    `get()` calls per course — without a retry, ONE transient network blip
+    (observed live: this host's proxy drops roughly 1 request in a batch of
+    ~20) aborts the whole walk, exactly what happened archiving `bigdata`."""
+    session = _fresh_session(tmp_path)
+    session.adopt([{"name": "BbRouter", "value": "expires:1,timeout:28800,xsrf:tok"}])
+    monkeypatch.setattr(session_module.asyncio, "sleep", AsyncMock())
+
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise httpx.ConnectTimeout("simulated proxy blip", request=request)
+        return httpx.Response(200, json={"ok": True}, headers={"content-type": "application/json"})
+
+    _mock_transport(monkeypatch, handler)
+    body = await session.get("/learn/api/v1/courses/_1_1/contents/ROOT/children")
+
+    assert body == {"ok": True}
+    assert attempts["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_gives_up_after_repeated_connect_timeouts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _fresh_session(tmp_path)
+    session.adopt([{"name": "BbRouter", "value": "expires:1,timeout:28800,xsrf:tok"}])
+    monkeypatch.setattr(session_module.asyncio, "sleep", AsyncMock())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("simulated proxy outage", request=request)
+
+    _mock_transport(monkeypatch, handler)
+    with pytest.raises(httpx.ConnectTimeout):
+        await session.get("/learn/api/v1/courses/_1_1/contents/ROOT/children")
 
 
 @pytest.mark.asyncio
