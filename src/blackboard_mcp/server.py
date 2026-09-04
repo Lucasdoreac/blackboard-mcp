@@ -96,6 +96,20 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_announcements(course_id)
 
     @server.tool()
+    async def list_video_descriptions(course_id: str) -> list[dict]:
+        """List accessibility descriptions ("#paratodosverem") already written
+        next to embedded video/interactive content; never opens a video or
+        scrapes a third-party embed."""
+        return await client.list_video_descriptions(course_id)
+
+    @server.tool()
+    async def list_video_transcripts(course_id: str) -> list[dict]:
+        """List Kaltura caption transcripts for every lecture video embedded
+        in the course's document pages; only fetches the caption track
+        Kaltura already generates, never the video/audio itself."""
+        return await client.list_video_transcripts(course_id)
+
+    @server.tool()
     async def sync_available_courses(term: str = "") -> list[dict]:
         """Snapshot every available course locally; no material is opened or downloaded."""
         return await client.sync_available_courses(term or None)

@@ -8,7 +8,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from playwright.async_api import BrowserContext, Page, async_playwright
@@ -187,6 +187,16 @@ class BlackboardClient:
             self._require_base_url(page.url)
             return playwright, context, page, attached
         except Exception:
+            # Real incident (2026-09-04): when `attached=True` (CDP-attached
+            # to a real, externally-managed Chrome — every non-headless call
+            # today), `_close()` deliberately never closes the shared
+            # CONTEXT, and `playwright.stop()` only disconnects OUR client,
+            # it does not close a tab already open in that real browser. A
+            # stale session made every subsequent call hit this except
+            # branch, and 15 orphaned tabs accumulated in the owner's own
+            # window before anyone noticed. The page THIS call opened is
+            # ours to close either way.
+            await page.close()
             await self._close(playwright, context, attached=attached)
             raise
 
@@ -294,8 +304,9 @@ class BlackboardClient:
         if not isinstance(results, list):
             raise RuntimeError("a arvore de conteudo nao carregou no formato esperado")
         rows: list[dict[str, Any]] = []
+        parent_id = node_id if node_id != "ROOT" else None
         for raw in results:
-            normalized = normalize_tree_row(raw, depth=depth)
+            normalized = normalize_tree_row(raw, depth=depth, parent_id=parent_id)
             if normalized is None:
                 continue
             rows.append(normalized)
@@ -471,7 +482,8 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
 
     async def archive_declared_pdfs(self, course_id: str) -> dict[str, Any]:
-        """Archive only item titles that explicitly declare PDF content."""
+        """Archive item files/titles that declare PDF content, plus any
+        same-host externallink (real document, never a third-party page)."""
         from .archive import archive_declared_pdfs
         from .sync import save_snapshot
 
@@ -482,6 +494,7 @@ class BlackboardClient:
             course_id=course_id,
             items=items,
             download=self.download_content,
+            expected_host=(urlparse(self.settings.base_url).hostname or "").lower() or None,
         )
 
     def read_download_chunk(self, course_id: str, content_id: str, offset: int, length: int) -> dict[str, str | int | bool]:
@@ -518,6 +531,306 @@ class BlackboardClient:
         if not isinstance(results, list):
             raise RuntimeError("os avisos do curso nao carregaram no formato esperado")
         return extract_announcements(course_id, results)
+
+    async def list_video_descriptions(self, course_id: str) -> list[dict[str, str]]:
+        """Accessibility descriptions ("#paratodosverem") already written by
+        the professor next to embedded video/interactive content, on every
+        document page of a course. Never opens a video player or scrapes a
+        third-party embed (genial.ly, YouTube, ...) — only reads text that is
+        already plain HTML the page itself renders. Checks the document's
+        own body first; if that has no marker, follows any same-host
+        embedded-unsafe-html block it references (mirrors
+        `_download_external_link`'s host check — cookies never leave this
+        host) and checks that fragment too.
+        """
+        from .video_descriptions import extract_paratodosverem, find_embedded_html_urls
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        expected_host = (urlparse(self.settings.base_url).hostname or "").lower()
+        results: list[dict[str, str]] = []
+        for row in await self.list_course_tree(course_id):
+            if row.get("content_handler") != "resource/x-bb-document":
+                continue
+            content_id = str(row["id"])
+            detail = await self._rest_get(f"/learn/api/v1/courses/{course_id}/contents/{content_id}")
+            body = detail.get("body") or {}
+            text = str(body.get("rawText") or body.get("displayText") or "")
+            description = extract_paratodosverem(text)
+            if description is None:
+                for url in find_embedded_html_urls(text):
+                    if (urlparse(url).hostname or "").lower() != expected_host:
+                        continue
+                    async with httpx.AsyncClient(
+                        cookies=self._session._cookies, follow_redirects=True, timeout=20.0
+                    ) as hc:
+                        response = await hc.get(url)
+                    if response.status_code >= 400:
+                        continue
+                    description = extract_paratodosverem(response.text)
+                    if description is not None:
+                        break
+            if description is not None:
+                results.append({
+                    "course_id": course_id, "content_id": content_id,
+                    "title": str(row.get("title") or ""), "description": description,
+                })
+        return results
+
+    _MAX_TRANSCRIPT_SEGMENTS = 60  # ~5h of captions at 300s/segment — generous, still bounded
+    _PAGE_VISIT_PACE_S = 2.0  # gap between consecutive document-page navigations in list_video_transcripts
+
+    _KALTURA_MULTIREQUEST_URL = "https://cdnapisec.kaltura.com/api_v3/service/multirequest"
+    # The trailing `/a.m3u8` is NOT decorative — matches the exact shape
+    # Kaltura's own player requests (confirmed live by network capture) and
+    # is load-bearing for `urljoin` below: without a filename after `ks/
+    # {ks}`, `urljoin(playlist_url, "segmentIndex/1.vtt")` treats the KS
+    # token itself as "the file" and replaces it, producing a URL with the
+    # LITERAL STRING "segmentIndex" as the KS — a real incident (2026-09-04):
+    # Kaltura's API answered `200 OK` with an `INVALID_KS` XML error body,
+    # not an HTTP error, so `response.ok` alone doesn't catch this class of
+    # mistake — the URL shape has to be right in the first place.
+    _KALTURA_SERVE_VTT_URL = (
+        "https://cfvod.kaltura.com/api_v3/index.php/service/caption_captionasset/"
+        "action/serveWebVTT/captionAssetId/{caption_id}/segmentDuration/300/ks/{ks}/a.m3u8"
+    )
+
+    async def _fetch_transcript_from_kaltura(self, page: Page, *, entry_id: str, partner_id: str) -> str | None:
+        """Fetch a transcript given ALREADY-KNOWN, stable Kaltura ids — the
+        one part of this flow with no Blackboard dependency at all: entry_id/
+        partner_id are public identifiers for an embeddable widget, and the
+        session token is minted fresh here via Kaltura's own
+        `session::startWidgetSession`, scoped to `partner_id`, not to any
+        Blackboard cookie. `page` only needs to be a real browser context —
+        it does not need to be logged into Blackboard, or even ever have
+        visited Blackboard (real incident 2026-09-04: a plain, non-browser
+        `httpx` call to this exact same endpoint hung indefinitely — Kaltura
+        appears to require a genuine browser networking stack).
+
+        Every Kaltura request below carries a `Referer` for our own
+        institution's Blackboard domain. Real incident (2026-09-04): without
+        it, `caption_captionasset::list`/`serveWebVTT` still answer `200 OK`
+        but with an EMPTY playlist/body — no error, just silent degradation
+        (Kaltura's domain access-control checks the referring domain, not
+        session privilege as first suspected). `page.request` is Playwright's
+        APIRequestContext, which — unlike a real in-page `fetch()` — never
+        auto-sets `Referer` to the page's current URL, so this has to be
+        explicit. Confirmed live: a BARE domain (no course/content path) is
+        enough — the check is domain-level, not path-level.
+        """
+        from .video_transcripts import parse_vtt_cues, parse_vtt_playlist, select_ready_caption_asset
+
+        referer = {"Referer": f"{self.settings.base_url}/"}
+        caption_response = await page.request.post(
+            self._KALTURA_MULTIREQUEST_URL,
+            form={
+                "1:service": "session", "1:action": "startWidgetSession", "1:widgetId": f"_{partner_id}",
+                "2:service": "caption_captionasset", "2:action": "list",
+                "2:filter:entryIdEqual": entry_id, "2:ks": "{1:result:ks}",
+                "format": "1",
+            },
+            headers=referer,
+        )
+        if not caption_response.ok:
+            return None
+        try:
+            session_result, captions_result = await caption_response.json()
+        except (ValueError, TypeError):
+            return None
+        ks = session_result.get("ks") if isinstance(session_result, dict) else None
+        captions = captions_result.get("objects") if isinstance(captions_result, dict) else None
+        if not ks or not isinstance(captions, list):
+            return None
+        caption = select_ready_caption_asset(captions)
+        if caption is None or not caption.get("id"):
+            return None
+        playlist_url = self._KALTURA_SERVE_VTT_URL.format(caption_id=caption["id"], ks=ks)
+        playlist_response = await page.request.get(playlist_url, headers=referer)
+        if not playlist_response.ok:
+            return None
+        segments = parse_vtt_playlist(await playlist_response.text())[: self._MAX_TRANSCRIPT_SEGMENTS]
+        chunks: list[str] = []
+        for segment in segments:
+            segment_response = await page.request.get(urljoin(playlist_url, segment), headers=referer)
+            if segment_response.ok:
+                chunks.append(parse_vtt_cues(await segment_response.text()))
+        transcript = " ".join(chunk for chunk in chunks if chunk).strip()
+        return transcript or None
+
+    async def _discover_kaltura_ids(self, page: Page, *, course_id: str, content_id: str) -> tuple[str, str] | None:
+        """Navigate an AUTHENTICATED Blackboard page and observe which
+        Kaltura video (if any) it embeds — `entry_id`/`partner_id` fire
+        within the first second or two of any Kaltura embed bootstrapping,
+        regardless of caption settings (unlike the caption request itself,
+        which the player may never issue — see `_fetch_transcript_from_
+        kaltura`'s docstring). Returns None (not an error) for the common
+        case: most document pages embed no video at all.
+        """
+        from .video_transcripts import extract_kaltura_ids
+
+        entry_id: str | None = None
+        partner_id: str | None = None
+
+        def observe(request: Any) -> None:
+            nonlocal entry_id, partner_id
+            if entry_id and partner_id:
+                return
+            found_entry, found_partner = extract_kaltura_ids(request.url)
+            entry_id = entry_id or found_entry
+            partner_id = partner_id or found_partner
+
+        page.on("request", observe)
+        try:
+            await page.goto(
+                f"{self.settings.base_url}/ultra/courses/{course_id}/document/{content_id}?view=content&state=view",
+                wait_until="domcontentloaded",
+            )
+            self._require_base_url(page.url)
+            for _ in range(10):
+                if entry_id and partner_id:
+                    break
+                await page.wait_for_timeout(1000)
+        finally:
+            page.remove_listener("request", observe)
+        if entry_id and partner_id:
+            return entry_id, partner_id
+        return None
+
+    async def get_video_transcript(self, course_id: str, content_id: str) -> str | None:
+        """Fetch the Kaltura caption transcript embedded in one document
+        page, if any — None (not an error) when the page has no Kaltura
+        video, which is most document pages. Real incident (2026-09-04): the
+        owner identified that every "Unidade" PDF has a companion lecture
+        video, embedded via Kaltura (`#player-gui`), confirmed live by
+        network capture.
+
+        Real incident (2026-09-04, follow-up #1): passively waiting for the
+        player to request its caption track missed a REAL, ready caption —
+        confirmed via Kaltura's own `caption_captionasset::list` action that
+        a `status: 2` asset existed, but the player's own `displayOnPlayer`
+        flag was `false` for it, so it never auto-requested it (a student
+        would have to click the player's CC button; this project never
+        simulates UI clicks on a 3rd-party player). Fixed by querying
+        Kaltura's caption list directly instead of waiting on the player.
+
+        Real incident (2026-09-04, follow-up #2): a full course re-check
+        re-walked EVERY document page every time, including pages already
+        confirmed empty — the owner's own semester never changes this
+        content after the fact. `video_transcript_cache` remembers the
+        verdict per `content_id`: `has_video=False` skips this page with NO
+        browser work at all; `has_video=True` with `entry_id`/`partner_id`
+        known skips the (expensive, Blackboard-login-dependent) discovery
+        navigation and only opens a BARE page scoped to Kaltura's own
+        domain — no Blackboard session required for that part at all.
+        """
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not content_id.startswith("_") or not content_id.endswith("_1"):
+            raise ValueError("content_id invalido")
+        from . import video_transcript_cache
+
+        cached = video_transcript_cache.get_entry(self.settings.data_home, course_id, content_id)
+        if cached is not None:
+            if not cached.get("has_video"):
+                return None
+            entry_id, partner_id = cached.get("entry_id"), cached.get("partner_id")
+            if entry_id and partner_id:
+                playwright, context, attached = await self._context(headless=True)
+                page = await self._page(context)
+                try:
+                    return await self._fetch_transcript_from_kaltura(page, entry_id=entry_id, partner_id=partner_id)
+                finally:
+                    await page.close()
+                    await self._close(playwright, context, attached=attached)
+
+        playwright, context, page, attached = await self._authenticated_page()
+        try:
+            ids = await self._discover_kaltura_ids(page, course_id=course_id, content_id=content_id)
+            # Real incident (2026-09-04): back-to-back FULL DISCOVERY
+            # navigations (real Playwright page loads against Blackboard's
+            # own SPA, not a REST call) made Ultra throw its own error
+            # screen mid-walk. Only a genuine navigation pays this pace — a
+            # cache hit (skip, or the bare Kaltura-only fetch above) never
+            # touches Blackboard's SPA at all and has nothing to be gentle
+            # about.
+            await asyncio.sleep(self._PAGE_VISIT_PACE_S)
+            if ids is None:
+                video_transcript_cache.save_entry(self.settings.data_home, course_id, content_id, has_video=False)
+                return None
+            entry_id, partner_id = ids
+            video_transcript_cache.save_entry(
+                self.settings.data_home, course_id, content_id,
+                has_video=True, entry_id=entry_id, partner_id=partner_id,
+            )
+            return await self._fetch_transcript_from_kaltura(page, entry_id=entry_id, partner_id=partner_id)
+        finally:
+            await page.close()
+            await self._close(playwright, context, attached=attached)
+
+    async def list_video_transcripts(self, course_id: str) -> list[dict[str, str]]:
+        """Kaltura caption transcripts for every document page of a course
+        that has one — companion to `list_video_descriptions` (the
+        accessibility-text path), used when the page instead embeds a real
+        Kaltura lecture video.
+
+        Real incident (2026-09-04): a "Videoaula" FOLDER wraps a single
+        `resource/x-bb-document` child that embeds the player — the player
+        only initializes when the FOLDER's own URL is visited (Ultra
+        collapses a single-item folder into that view); navigating to the
+        child document's own URL loads nothing (confirmed live, zero
+        network activity). So a document page that yields no transcript on
+        its own URL gets ONE retry on its parent folder's URL, when it has
+        one — cheap when the retry also finds nothing (a page can genuinely
+        have no video), necessary when the video only ever renders there.
+        """
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        results: list[dict[str, str]] = []
+        for row in await self.list_course_tree(course_id):
+            if row.get("content_handler") != "resource/x-bb-document":
+                continue
+            content_id = str(row["id"])
+            transcript = await self._get_video_transcript_safe(course_id, content_id)
+            if transcript is None:
+                parent_id = row.get("parent_id")
+                if parent_id:
+                    transcript = await self._get_video_transcript_safe(course_id, str(parent_id))
+            if transcript is not None:
+                results.append({
+                    "course_id": course_id, "content_id": content_id,
+                    "title": str(row.get("title") or ""), "transcript": transcript,
+                })
+        return results
+
+    async def _get_video_transcript_safe(self, course_id: str, content_id: str) -> str | None:
+        """Same contract as `get_video_transcript`, but a real failure on ONE
+        page (a slow/broken Blackboard render, a network hiccup talking to
+        Kaltura) degrades to "no transcript found" instead of aborting the
+        whole course walk — real incident (2026-09-04): a single page's
+        `TimeoutError` killed `list_video_transcripts` before it reached any
+        of the course's other, healthy pages.
+
+        Also CACHES the failure as `has_video=False` — real incident
+        (2026-09-04, follow-up): a page that always errors (institution
+        bloat unrelated to any lecture) was walked again on every single
+        run, forever, because an exception short-circuits `get_video_
+        transcript` before it reaches its own cache-write. Course content is
+        stable within a semester (the owner's own words), so a page broken
+        today is expected to be the same page tomorrow — deliberate
+        trade-off: a genuinely transient failure (one bad network blip) also
+        gets skipped from then on, same as a permanently broken page. Never
+        caches a `ValueError` (a real bug in the caller, not a fact about
+        the page) — that still propagates uncaught.
+        """
+        from . import video_transcript_cache
+
+        try:
+            return await self.get_video_transcript(course_id, content_id)
+        except ValueError:
+            raise
+        except Exception:
+            video_transcript_cache.save_entry(self.settings.data_home, course_id, content_id, has_video=False)
+            return None
 
     async def sync_available_courses(self, term: str | None = None) -> list[dict[str, Any]]:
         """Synchronize each visible, available course one at a time."""
