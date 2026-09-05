@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -39,12 +40,45 @@ def save_profile_config(data_home: Path, profile: str, config: dict[str, Any]) -
     path.chmod(0o600)
 
 
+# Candidatos de Chrome por plataforma, na ordem em que valem a pena tentar.
+# O default era `/usr/bin/google-chrome` cravado: Linux-only, e quem falhava
+# PRIMEIRO era o `auth-status` — justamente o comando que se roda para
+# descobrir se precisa logar. Pior lugar possível para um default errado.
+# `BLACKBOARD_CHROME_PATH` continua vencendo tudo (scripting/CI).
+_CHROME_CANDIDATES: tuple[str, ...] = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+)
+
+
+def resolve_chrome_path() -> str:
+    """Primeiro Chrome que EXISTE nesta máquina; senão, o que estiver no PATH.
+
+    Fallback final é o caminho Linux histórico — assim o erro, quando não há
+    Chrome nenhum, continua nomeando um caminho concreto em vez de string
+    vazia.
+    """
+    for candidate in _CHROME_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return "/usr/bin/google-chrome"
+
+
 @dataclass(frozen=True)
 class Settings:
     profile: str
     base_url: str = DEFAULT_BASE_URL
     data_home: Path = Path.home() / ".local" / "share" / "blackboard-mcp"
-    chrome_path: str = "/usr/bin/google-chrome"
+    chrome_path: str = field(default_factory=resolve_chrome_path)
     debug_port: int = 9223
 
     @property
@@ -67,5 +101,5 @@ class Settings:
             profile=profile,
             base_url=str(base_url).rstrip("/"),
             data_home=data_home,
-            chrome_path=os.getenv("BLACKBOARD_CHROME_PATH", "/usr/bin/google-chrome"),
+            chrome_path=os.getenv("BLACKBOARD_CHROME_PATH") or resolve_chrome_path(),
         )
