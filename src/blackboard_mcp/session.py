@@ -15,6 +15,11 @@ endpoint (`timeUntilBbSessionInactive`) rotates `BbRouter` with a fresh
 `expires` on every call — a periodic ping via this same session (see
 `keepalive.py`) keeps the session alive indefinitely without ever opening a
 browser again.
+
+A sessão é carregada do disco no `__init__` e RECARREGADA sob rejeição
+(`reload_from_disk`), para que um `login` feito por fora cure o processo em
+execução — sem isso o keep-alive desiste na primeira `SessionStale` e nunca
+mais ajuda, mesmo com credencial nova no disco.
 """
 
 from __future__ import annotations
@@ -91,13 +96,32 @@ class BlackboardSession:
         self._xsrf = xsrf
         self._save()
 
+    def reload_from_disk(self) -> bool:
+        """Recarrega `session.json`; True se trouxe cookie DIFERENTE e utilizável.
+
+        A sessão é lida UMA vez, no `__init__`. Sem esta recarga, um
+        `blackboard-mcp login` feito por fora não curava a bridge em execução:
+        o processo seguia com o cookie morto até alguém rodar um caminho via
+        Playwright que fizesse `adopt()`. E o keep-alive, que desiste ao levar
+        `SessionStale`, ficava inerte para sempre — o mecanismo existia e não
+        alcançava o caso real. Observado ao vivo em 2026-09-05: bridge de pé
+        desde 10:02 com sessão vencida, e só às 13:25 (quando um download
+        forçou o caminho com browser) o `session.json` foi reescrito.
+        """
+        antes = (self._cookies.get("BbRouter"), self._xsrf)
+        self._load()
+        depois = (self._cookies.get("BbRouter"), self._xsrf)
+        return depois != antes and self.configured
+
     def clear(self) -> None:
         self._cookies = {}
         self._xsrf = None
         if self._path.exists():
             self._path.unlink()
 
-    async def get(self, path: str, params: dict[str, str] | None = None) -> Any:
+    async def get(
+        self, path: str, params: dict[str, str] | None = None, *, _retry_after_reload: bool = True
+    ) -> Any:
         """GET one internal `/learn/api/v1/...` path; returns decoded JSON.
 
         A recursive tree walk fans out into dozens of these calls per
@@ -107,7 +131,7 @@ class BlackboardSession:
         never on 401/403/bad-JSON, which are real auth failures, not
         network noise.
         """
-        if not self.configured:
+        if not self.configured and not self.reload_from_disk():
             raise SessionStale("sessao nao configurada; faca login")
         last_error: httpx.TransportError | None = None
         for attempt in range(3):
@@ -132,6 +156,12 @@ class BlackboardSession:
             raise last_error  # pragma: no cover — loop always breaks or raises above
         self._absorb_rotated_cookies(response)
         if response.status_code in (401, 403):
+            # Antes de declarar a sessão morta, relê o disco: pode haver login
+            # NOVO feito por fora enquanto este processo seguia com o cookie
+            # velho. Só uma vez, e só se o cookie de fato mudou — sem isso
+            # viraria laço de retry contra um 401 legítimo.
+            if _retry_after_reload and self.reload_from_disk():
+                return await self.get(path, params, _retry_after_reload=False)
             raise SessionStale("a sessao Blackboard foi recusada (401/403)")
         content_type = response.headers.get("content-type", "")
         if response.status_code >= 400 or "json" not in content_type:
