@@ -32,6 +32,57 @@ def download_dir(data_home: Path, course_id: str) -> Path:
     return target
 
 
+# Teto POR FORMATO, não único. 100 MiB foi dimensionado para PDF; texto e
+# código não chegam perto disso, e um arquivo de texto gigante é sinal de que
+# veio a coisa errada, não de material grande. (Mesma lição da A104 do repo
+# SOBER: teto compartilhado assume que o propósito é o mesmo.)
+MAX_BYTES_BY_KIND: dict[str, int] = {
+    "pdf": MAX_DOWNLOAD_BYTES,
+    "office": MAX_DOWNLOAD_BYTES,
+    "text": 25 * 1024 * 1024,
+}
+
+_HTML_MARKERS = (b"<!doctype html", b"<html", b"<!DOCTYPE HTML")
+
+
+def verify_signature(path: Path, kind: str) -> None:
+    """O byte tem que bater com o FORMATO DECLARADO. Levanta ValueError se não.
+
+    Generaliza a checagem de `%PDF-`, que nunca foi sobre PDF: era sobre o
+    conteúdo corresponder ao que o item declarou. Foi ela que impediu uma
+    página de LOGIN de ser arquivada como material quando a A88 abriu os links
+    mesmo-host — por isso ela é generalizada, jamais removida.
+
+    Para texto não existe magic byte, então a defesa equivalente é dupla:
+    decodificar de verdade e NÃO parecer HTML (que é a cara da tal página de
+    login). `.html` fica fora do conjunto arquivável justamente porque ali essa
+    segunda checagem não teria como existir.
+    """
+    with path.open("rb") as source:
+        head = source.read(1024)
+    if kind == "pdf":
+        if not head.startswith(b"%PDF-"):
+            raise ValueError("Blackboard nao retornou um PDF valido")
+        return
+    if kind == "office":
+        if not head.startswith(b"PK\x03\x04"):
+            raise ValueError("Blackboard nao retornou um arquivo Office valido")
+        return
+    if kind == "text":
+        stripped = head.lstrip()[:64].lower()
+        if any(stripped.startswith(m.lower()) for m in _HTML_MARKERS):
+            raise ValueError("Blackboard retornou HTML (provavel pagina de login), nao o material")
+        try:
+            head.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                head.decode("latin-1")
+            except UnicodeDecodeError:
+                raise ValueError("Blackboard nao retornou texto decodificavel") from None
+        return
+    raise ValueError(f"formato declarado desconhecido: {kind!r}")
+
+
 def persist_download(
     data_home: Path,
     *,
@@ -40,19 +91,22 @@ def persist_download(
     title: str,
     suggested_filename: str,
     temporary_path: Path,
+    kind: str = "pdf",
 ) -> dict[str, str | int]:
     """Move a downloaded file into owner-only storage and write a receipt."""
     size = temporary_path.stat().st_size
-    if size > MAX_DOWNLOAD_BYTES:
+    teto = MAX_BYTES_BY_KIND.get(kind, MAX_DOWNLOAD_BYTES)
+    if size > teto:
         temporary_path.unlink(missing_ok=True)
-        raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+        raise ValueError(f"material {kind} excede o limite de {teto // 1024 // 1024} MiB")
     if size == 0:
         temporary_path.unlink(missing_ok=True)
         raise ValueError("Blackboard retornou um material vazio")
-    with temporary_path.open("rb") as source:
-        if source.read(5) != b"%PDF-":
-            temporary_path.unlink(missing_ok=True)
-            raise ValueError("Blackboard nao retornou um PDF valido")
+    try:
+        verify_signature(temporary_path, kind)
+    except ValueError:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
     directory = download_dir(data_home, course_id)
     filename = _safe_piece(suggested_filename)

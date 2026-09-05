@@ -58,7 +58,7 @@ def test_pdf_classifier_trusts_the_real_mime_type_over_the_title() -> None:
 async def test_archive_is_idempotent_and_records_unsupported_items(tmp_path: Path) -> None:
     seen: list[tuple[str, str]] = []
 
-    async def download(course_id: str, content_id: str) -> dict:
+    async def download(course_id: str, content_id: str, kind: str = "pdf") -> dict:
         seen.append((course_id, content_id))
         directory = tmp_path / "downloads" / "course_1"
         directory.mkdir(parents=True, exist_ok=True)

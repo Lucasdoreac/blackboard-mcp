@@ -61,6 +61,18 @@ def ensure_pdfs_download_externally(profile_dir: Path) -> None:
     prefs_path.chmod(0o600)
 
 
+# Rotas de conteúdo do PRÓPRIO Blackboard, conjunto FECHADO. A checagem
+# original só aceitava `/ultra/courses/<id>/` — e isso nunca foi sobre formato,
+# era sobre ROTA: arquivo autoral do professor é servido em `/bbcswebdav/`
+# (medido ao vivo em 2026-09-05: `Exercicio1_2.md` ->
+# `/bbcswebdav/pid-23612017-dt-content-rid-335271614_1/xid-335271614_1`), então
+# TODO material subido por quem dá a aula caía fora, independentemente da
+# extensão. A intenção ("nunca sair do Blackboard") continua intacta: o path é
+# resolvido contra a página atual, mesma origem, e o conjunto segue fechado.
+def _is_blackboard_content_route(path: str, course_id: str) -> bool:
+    return path.startswith(f"/ultra/courses/{course_id}/") or path.startswith("/bbcswebdav/")
+
+
 class BlackboardClient:
     """Keeps authentication inside a dedicated, persistent local Chrome profile."""
 
@@ -335,7 +347,9 @@ class BlackboardClient:
         items = await self.list_course_tree(course_id)
         return save_snapshot(self.settings.data_home, course_id, items)
 
-    async def download_content(self, course_id: str, content_id: str) -> dict[str, str | int]:
+    async def download_content(
+        self, course_id: str, content_id: str, kind: str = "pdf"
+    ) -> dict[str, str | int]:
         """Download one owner-requested leaf item without persisting its signed URL.
 
         Dispatches by `contentHandler`: `resource/x-bb-externallink` items
@@ -354,11 +368,11 @@ class BlackboardClient:
         item = await self._rest_get(f"/learn/api/v1/courses/{course_id}/contents/{content_id}")
         title = str(item.get("title") or "")
         if str(item.get("contentHandler") or "") == "resource/x-bb-externallink":
-            return await self._download_external_link(course_id, content_id, title, item)
-        return await self._download_via_playwright(course_id, content_id, title)
+            return await self._download_external_link(course_id, content_id, title, item, kind)
+        return await self._download_via_playwright(course_id, content_id, title, kind)
 
     async def _download_external_link(
-        self, course_id: str, content_id: str, title: str, item: dict[str, Any]
+        self, course_id: str, content_id: str, title: str, item: dict[str, Any], kind: str = "pdf"
     ) -> dict[str, str | int]:
         """Only followed when the link stays on Blackboard's own host — this
         content type is ALSO how a professor links to a genuinely external
@@ -388,10 +402,12 @@ class BlackboardClient:
             temporary = Path(handle.name)
         return persist_download(
             self.settings.data_home, course_id=course_id, content_id=content_id,
-            title=title, suggested_filename=title, temporary_path=temporary,
+            title=title, suggested_filename=title, temporary_path=temporary, kind=kind,
         )
 
-    async def _download_via_playwright(self, course_id: str, content_id: str, title: str) -> dict[str, str | int]:
+    async def _download_via_playwright(
+        self, course_id: str, content_id: str, title: str, kind: str = "pdf"
+    ) -> dict[str, str | int]:
         from .downloads import persist_download
 
         playwright, context, page, attached = await self._authenticated_page()
@@ -425,7 +441,7 @@ class BlackboardClient:
             raw_href = await link.get_attribute("href")
             if raw_href:
                 path = await link.evaluate("(node, href) => new URL(href, location.href).pathname", raw_href)
-                if not isinstance(path, str) or not path.startswith(f"/ultra/courses/{course_id}/"):
+                if not isinstance(path, str) or not _is_blackboard_content_route(path, course_id):
                     raise ValueError("rota de download fora do Blackboard nao permitida")
             elif await link.evaluate("node => node.tagName") != "BUTTON":
                 raise ValueError("item nao oferece rota de download")
@@ -452,23 +468,61 @@ class BlackboardClient:
                 ):
                     pdf_response.set_result(response)
 
+            # DOIS caminhos, não um. O comentário acima vale para o PDF
+            # institucional (frame da CDN); arquivo AUTORAL do professor, servido
+            # em `/bbcswebdav/`, dispara um Download event de verdade. Esperar só
+            # pela resposta da CDN fazia o `.md` baixar e o código não pegar: o
+            # future nunca resolvia e morria em TimeoutError com o arquivo já em
+            # disco no diretório temporário do Playwright (medido ao vivo,
+            # 2026-09-05: `Lista de Exercícios — AFD`, 8669 bytes). Fica quem
+            # resolver primeiro.
+            baixado: asyncio.Future[Any] = loop.create_future()
+
+            def observe_download(download: Any) -> None:
+                if not baixado.done():
+                    baixado.set_result(download)
+
             page.on("response", observe)
+            page.on("download", observe_download)
             await link.click(timeout=5_000)
             try:
-                response = await asyncio.wait_for(pdf_response, timeout=30)
+                pronto, pendentes = await asyncio.wait(
+                    {pdf_response, baixado},
+                    timeout=30,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for tarefa in pendentes:
+                    tarefa.cancel()
+                if not pronto:
+                    raise TimeoutError("Blackboard nao entregou o material em 30s")
+                vencedor = pronto.pop()
             finally:
                 page.remove_listener("response", observe)
-            declared_size = response.headers.get("content-length")
+                page.remove_listener("download", observe_download)
+
             from .downloads import MAX_DOWNLOAD_BYTES, download_dir
-            if declared_size and declared_size.isdecimal() and int(declared_size) > MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
-            payload = await response.body()
-            if len(payload) > MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
             directory = download_dir(self.settings.data_home, course_id)
-            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
-                handle.write(payload)
-                temporary = Path(handle.name)
+
+            if vencedor is baixado:
+                # Download event: o Playwright já gravou num temporário próprio.
+                origem = Path(await vencedor.result().path())
+                if origem.stat().st_size > MAX_DOWNLOAD_BYTES:
+                    origem.unlink(missing_ok=True)
+                    raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+                with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+                    handle.write(origem.read_bytes())
+                    temporary = Path(handle.name)
+            else:
+                response = vencedor.result()
+                declared_size = response.headers.get("content-length")
+                if declared_size and declared_size.isdecimal() and int(declared_size) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+                payload = await response.body()
+                if len(payload) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+                with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+                    handle.write(payload)
+                    temporary = Path(handle.name)
             return persist_download(
                 self.settings.data_home,
                 course_id=course_id,
@@ -476,6 +530,7 @@ class BlackboardClient:
                 title=title,
                 suggested_filename=title,
                 temporary_path=temporary,
+                kind=kind,
             )
         finally:
             await page.close()
