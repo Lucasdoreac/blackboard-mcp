@@ -71,3 +71,27 @@ def test_assinatura_de_pdf_e_office_continuam_exigindo_magic(tmp_path: Path) -> 
         verify_signature(doc, "office")
     doc.write_bytes(b"PK\x03\x04resto")
     verify_signature(doc, "office")
+
+
+# ---------------------------------------------------------------------------
+# Terceiro gate: a ROTA (nunca foi sobre formato)
+# ---------------------------------------------------------------------------
+from blackboard_mcp.client import _is_blackboard_content_route
+
+
+@pytest.mark.parametrize(
+    "rota,aceita",
+    [
+        ("/ultra/courses/_1169577_1/outline/file/_123_1", True),
+        ("/bbcswebdav/pid-23612017-dt-content-rid-335271614_1/xid-335271614_1", True),
+        ("/ultra/courses/_OUTRO_1/outline/file/_123_1", False),
+        ("/webapps/blackboard/execute/content/file", False),
+        ("//evil.example.com/x", False),
+        ("/", False),
+    ],
+)
+def test_rota_de_download_e_conjunto_fechado(rota: str, aceita: bool) -> None:
+    """Medido ao vivo (2026-09-05): o `.md` autoral do professor vive em
+    `/bbcswebdav/`, não em `/ultra/courses/`. O gate original barrava TODO
+    arquivo subido por quem dá a aula — não por formato, por rota."""
+    assert _is_blackboard_content_route(rota, "_1169577_1") is aceita

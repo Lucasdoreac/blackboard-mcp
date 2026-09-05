@@ -61,6 +61,18 @@ def ensure_pdfs_download_externally(profile_dir: Path) -> None:
     prefs_path.chmod(0o600)
 
 
+# Rotas de conteúdo do PRÓPRIO Blackboard, conjunto FECHADO. A checagem
+# original só aceitava `/ultra/courses/<id>/` — e isso nunca foi sobre formato,
+# era sobre ROTA: arquivo autoral do professor é servido em `/bbcswebdav/`
+# (medido ao vivo em 2026-09-05: `Exercicio1_2.md` ->
+# `/bbcswebdav/pid-23612017-dt-content-rid-335271614_1/xid-335271614_1`), então
+# TODO material subido por quem dá a aula caía fora, independentemente da
+# extensão. A intenção ("nunca sair do Blackboard") continua intacta: o path é
+# resolvido contra a página atual, mesma origem, e o conjunto segue fechado.
+def _is_blackboard_content_route(path: str, course_id: str) -> bool:
+    return path.startswith(f"/ultra/courses/{course_id}/") or path.startswith("/bbcswebdav/")
+
+
 class BlackboardClient:
     """Keeps authentication inside a dedicated, persistent local Chrome profile."""
 
@@ -429,7 +441,7 @@ class BlackboardClient:
             raw_href = await link.get_attribute("href")
             if raw_href:
                 path = await link.evaluate("(node, href) => new URL(href, location.href).pathname", raw_href)
-                if not isinstance(path, str) or not path.startswith(f"/ultra/courses/{course_id}/"):
+                if not isinstance(path, str) or not _is_blackboard_content_route(path, course_id):
                     raise ValueError("rota de download fora do Blackboard nao permitida")
             elif await link.evaluate("node => node.tagName") != "BUTTON":
                 raise ValueError("item nao oferece rota de download")
