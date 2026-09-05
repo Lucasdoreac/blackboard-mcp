@@ -95,3 +95,33 @@ def test_rota_de_download_e_conjunto_fechado(rota: str, aceita: bool) -> None:
     `/bbcswebdav/`, não em `/ultra/courses/`. O gate original barrava TODO
     arquivo subido por quem dá a aula — não por formato, por rota."""
     assert _is_blackboard_content_route(rota, "_1169577_1") is aceita
+
+
+# ---------------------------------------------------------------------------
+# Quarto gate: a CAPTURA (PDF da CDN x Download event)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_captura_aceita_download_event_alem_da_resposta_da_cdn() -> None:
+    """O código esperava só a resposta PDF da CDN — verdade para o PDF
+    institucional, falso para arquivo AUTORAL do professor, que dispara um
+    Download event de verdade.
+
+    Sintoma medido ao vivo (2026-09-05): o `.md` baixava (8669 bytes no
+    diretório temporário do Playwright) e o future nunca resolvia — morria em
+    TimeoutError com o arquivo já em disco. Aqui provamos a corrida: com
+    APENAS o download resolvendo, `asyncio.wait` devolve o vencedor em vez de
+    estourar o teto.
+    """
+    import asyncio as aio
+
+    loop = aio.get_running_loop()
+    resposta_cdn: aio.Future = loop.create_future()   # nunca resolve (é o caso do .md)
+    baixado: aio.Future = loop.create_future()
+    baixado.set_result("download-event")
+
+    pronto, pendentes = await aio.wait(
+        {resposta_cdn, baixado}, timeout=1, return_when=aio.FIRST_COMPLETED
+    )
+    for t in pendentes:
+        t.cancel()
+    assert pronto and pronto.pop().result() == "download-event"

@@ -468,23 +468,61 @@ class BlackboardClient:
                 ):
                     pdf_response.set_result(response)
 
+            # DOIS caminhos, não um. O comentário acima vale para o PDF
+            # institucional (frame da CDN); arquivo AUTORAL do professor, servido
+            # em `/bbcswebdav/`, dispara um Download event de verdade. Esperar só
+            # pela resposta da CDN fazia o `.md` baixar e o código não pegar: o
+            # future nunca resolvia e morria em TimeoutError com o arquivo já em
+            # disco no diretório temporário do Playwright (medido ao vivo,
+            # 2026-09-05: `Lista de Exercícios — AFD`, 8669 bytes). Fica quem
+            # resolver primeiro.
+            baixado: asyncio.Future[Any] = loop.create_future()
+
+            def observe_download(download: Any) -> None:
+                if not baixado.done():
+                    baixado.set_result(download)
+
             page.on("response", observe)
+            page.on("download", observe_download)
             await link.click(timeout=5_000)
             try:
-                response = await asyncio.wait_for(pdf_response, timeout=30)
+                pronto, pendentes = await asyncio.wait(
+                    {pdf_response, baixado},
+                    timeout=30,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for tarefa in pendentes:
+                    tarefa.cancel()
+                if not pronto:
+                    raise TimeoutError("Blackboard nao entregou o material em 30s")
+                vencedor = pronto.pop()
             finally:
                 page.remove_listener("response", observe)
-            declared_size = response.headers.get("content-length")
+                page.remove_listener("download", observe_download)
+
             from .downloads import MAX_DOWNLOAD_BYTES, download_dir
-            if declared_size and declared_size.isdecimal() and int(declared_size) > MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
-            payload = await response.body()
-            if len(payload) > MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
             directory = download_dir(self.settings.data_home, course_id)
-            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
-                handle.write(payload)
-                temporary = Path(handle.name)
+
+            if vencedor is baixado:
+                # Download event: o Playwright já gravou num temporário próprio.
+                origem = Path(await vencedor.result().path())
+                if origem.stat().st_size > MAX_DOWNLOAD_BYTES:
+                    origem.unlink(missing_ok=True)
+                    raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+                with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+                    handle.write(origem.read_bytes())
+                    temporary = Path(handle.name)
+            else:
+                response = vencedor.result()
+                declared_size = response.headers.get("content-length")
+                if declared_size and declared_size.isdecimal() and int(declared_size) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+                payload = await response.body()
+                if len(payload) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+                with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+                    handle.write(payload)
+                    temporary = Path(handle.name)
             return persist_download(
                 self.settings.data_home,
                 course_id=course_id,
