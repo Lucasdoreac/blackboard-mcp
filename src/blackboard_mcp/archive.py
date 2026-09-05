@@ -39,16 +39,52 @@ def is_declared_pdf(item: dict[str, Any], *, expected_host: str | None = None) -
     widens which same-host links get a download ATTEMPT, it does not weaken
     either safety check.
     """
+    return declared_kind(item, expected_host=expected_host) is not None
+
+
+# Extensões que o acervo arquiva além de PDF. Curso de computação entrega
+# código e texto puro tanto quanto entrega slide — e o gate anterior só
+# reconhecia PDF, então `.md`, `.py` ou `.cpp` numa aba nunca eram sequer
+# CANDIDATOS a download (achado do dono, 2026-09-05). Vídeo fica de fora de
+# propósito: o texto útil dele é a transcrição, obtida sem baixar o arquivo.
+_TEXT_EXTS = frozenset({
+    ".md", ".markdown", ".txt", ".csv", ".json", ".rst", ".tex", ".log",
+    ".py", ".c", ".h", ".cpp", ".hpp", ".cc", ".java", ".js", ".ts", ".sql",
+    ".sh", ".r", ".m", ".go", ".rs", ".ipynb", ".yaml", ".yml",
+})
+# `.html`/`.xml` ficam FORA de propósito: a defesa do formato de texto é "não
+# parece HTML" — que foi o que impediu uma página de login de ser arquivada
+# como material quando a A88 abriu os links mesmo-host. Para um `.html`
+# declarado essa checagem não existe, e o buraco voltaria pela porta nova.
+_OFFICE_EXTS = frozenset({".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"})
+
+
+def declared_kind(item: dict[str, Any], *, expected_host: str | None = None) -> str | None:
+    """Qual FORMATO este item declara ser: 'pdf', 'text', 'office' — ou None.
+
+    Substitui o booleano `is_declared_pdf`: o formato declarado é o que decide
+    a assinatura exigida no download (`downloads.verify_signature`) e o teto de
+    tamanho. Um booleano não conseguia carregar essa informação adiante, e era
+    por isso que o segundo gate só sabia cobrar `%PDF-`.
+    """
     if item.get("kind") != "item":
-        return False
+        return None
     if item.get("mime_type") == "application/pdf":
-        return True
+        return "pdf"
+    title = str(item.get("title") or "").strip()
+    suffix = Path(title).suffix.lower()
+    if suffix in _TEXT_EXTS:
+        return "text"
+    if suffix in _OFFICE_EXTS:
+        return "office"
     if expected_host is not None and item.get("content_handler") == "resource/x-bb-externallink":
         url = str(item.get("external_url") or "")
         if url and (urlparse(url).hostname or "").lower() == expected_host.lower():
-            return True
-    title = str(item.get("title") or "").strip().casefold()
-    return title.endswith(".pdf") or "arquivo em pdf" in title
+            return "pdf"
+    lowered = title.casefold()
+    if lowered.endswith(".pdf") or "arquivo em pdf" in lowered:
+        return "pdf"
+    return None
 
 
 def archive_report_path(data_home: Path, course_id: str) -> Path:
@@ -71,11 +107,15 @@ async def archive_declared_pdfs(
     Existing verified receipts are skipped; a failed candidate is recorded so
     the owner can see a gap without treating it as a successful archive.
     """
-    candidates = [item for item in items if is_declared_pdf(item, expected_host=expected_host)]
+    candidates = [
+        (item, kind)
+        for item in items
+        if (kind := declared_kind(item, expected_host=expected_host)) is not None
+    ]
     downloaded: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     failed: list[dict[str, str]] = []
-    for item in candidates:
+    for item, kind in candidates:
         content_id = str(item.get("id") or "")
         title = str(item.get("title") or "")
         if not content_id:
@@ -84,7 +124,7 @@ async def archive_declared_pdfs(
             skipped.append({"content_id": content_id, "title": title, "reason": "already_verified"})
             continue
         try:
-            receipt = await download(course_id, content_id)
+            receipt = await download(course_id, content_id, kind)
         except (RuntimeError, ValueError) as exc:
             # Browser/portal errors can contain URLs or implementation details.
             failed.append({"content_id": content_id, "title": title, "reason": type(exc).__name__})

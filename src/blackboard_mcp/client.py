@@ -335,7 +335,9 @@ class BlackboardClient:
         items = await self.list_course_tree(course_id)
         return save_snapshot(self.settings.data_home, course_id, items)
 
-    async def download_content(self, course_id: str, content_id: str) -> dict[str, str | int]:
+    async def download_content(
+        self, course_id: str, content_id: str, kind: str = "pdf"
+    ) -> dict[str, str | int]:
         """Download one owner-requested leaf item without persisting its signed URL.
 
         Dispatches by `contentHandler`: `resource/x-bb-externallink` items
@@ -354,11 +356,11 @@ class BlackboardClient:
         item = await self._rest_get(f"/learn/api/v1/courses/{course_id}/contents/{content_id}")
         title = str(item.get("title") or "")
         if str(item.get("contentHandler") or "") == "resource/x-bb-externallink":
-            return await self._download_external_link(course_id, content_id, title, item)
-        return await self._download_via_playwright(course_id, content_id, title)
+            return await self._download_external_link(course_id, content_id, title, item, kind)
+        return await self._download_via_playwright(course_id, content_id, title, kind)
 
     async def _download_external_link(
-        self, course_id: str, content_id: str, title: str, item: dict[str, Any]
+        self, course_id: str, content_id: str, title: str, item: dict[str, Any], kind: str = "pdf"
     ) -> dict[str, str | int]:
         """Only followed when the link stays on Blackboard's own host — this
         content type is ALSO how a professor links to a genuinely external
@@ -388,10 +390,12 @@ class BlackboardClient:
             temporary = Path(handle.name)
         return persist_download(
             self.settings.data_home, course_id=course_id, content_id=content_id,
-            title=title, suggested_filename=title, temporary_path=temporary,
+            title=title, suggested_filename=title, temporary_path=temporary, kind=kind,
         )
 
-    async def _download_via_playwright(self, course_id: str, content_id: str, title: str) -> dict[str, str | int]:
+    async def _download_via_playwright(
+        self, course_id: str, content_id: str, title: str, kind: str = "pdf"
+    ) -> dict[str, str | int]:
         from .downloads import persist_download
 
         playwright, context, page, attached = await self._authenticated_page()
@@ -476,6 +480,7 @@ class BlackboardClient:
                 title=title,
                 suggested_filename=title,
                 temporary_path=temporary,
+                kind=kind,
             )
         finally:
             await page.close()
