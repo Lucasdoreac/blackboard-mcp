@@ -687,6 +687,39 @@ class BlackboardClient:
                 })
         return results
 
+    async def list_course_documents(self, course_id: str) -> list[dict[str, str]]:
+        """Plain text of every `resource/x-bb-document` page body in a course
+        — the professor's own lecture notes / unit intro / instructions,
+        written straight into the page. Reads only the body text the content
+        API returns; never fetches a URL or opens an embed. Pages with too
+        little text (or none) are skipped, not errors."""
+        from .document_text import clean_document_body
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        results: list[dict[str, str]] = []
+        for row in await self.list_course_tree(course_id):
+            if row.get("content_handler") != "resource/x-bb-document":
+                continue
+            content_id = str(row["id"])
+            detail = await self._rest_get(
+                f"/learn/api/v1/courses/{course_id}/contents/{content_id}"
+            )
+            body = detail.get("body") or {}
+            text = clean_document_body(
+                body.get("rawText"),
+                body.get("displayText") or body.get("html"),
+            )
+            if text is None:
+                continue
+            results.append({
+                "course_id": course_id,
+                "content_id": content_id,
+                "title": str(row.get("title") or ""),
+                "text": text,
+            })
+        return results
+
     _MAX_TRANSCRIPT_SEGMENTS = 60  # ~5h of captions at 300s/segment — generous, still bounded
     _PAGE_VISIT_PACE_S = 2.0  # gap between consecutive document-page navigations in list_video_transcripts
 

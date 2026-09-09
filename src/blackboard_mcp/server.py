@@ -103,6 +103,13 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_video_descriptions(course_id)
 
     @server.tool()
+    async def list_course_documents(course_id: str) -> list[dict]:
+        """List the plain text of every `x-bb-document` page body — the
+        professor's own lecture notes / unit intro / instructions written
+        into the page (no attachment). Short/empty pages are skipped."""
+        return await client.list_course_documents(course_id)
+
+    @server.tool()
     async def list_video_transcripts(course_id: str) -> list[dict]:
         """List Kaltura caption transcripts for every lecture video embedded
         in the course's document pages; only fetches the caption track
