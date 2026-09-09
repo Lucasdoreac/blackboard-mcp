@@ -352,14 +352,24 @@ class BlackboardClient:
     ) -> dict[str, str | int]:
         """Download one owner-requested leaf item without persisting its signed URL.
 
-        Dispatches by `contentHandler`: `resource/x-bb-externallink` items
-        (achado real 2026-09-02: Blackboard's own "Arquivo em PDF" material
-        type) point at a URL rather than a rendered outline element, and a
-        direct authenticated GET is both simpler and more reliable than
-        clicking through the outline — Ultra's click-and-intercept flow for
-        this content type passes through an interstitial HTML response that
-        lies about its `content-type` before the real PDF bytes ever arrive.
-        Every other content type keeps the existing click-and-intercept path.
+        Order of preference, most robust first:
+
+        1. `resource/x-bb-externallink` (achado real 2026-09-02: Blackboard's
+           own "Arquivo em PDF" material type) — a direct authenticated GET on
+           the item's own URL. Ultra's click-and-intercept flow for this type
+           passes through an interstitial HTML response that lies about its
+           `content-type` before the real bytes arrive.
+        2. `resource/x-bb-file` with a `permanentUrl` — the item's REST
+           metadata already carries a same-host `/bbcswebdav/` path. The SAME
+           authenticated GET (path 1's mechanism) fetches it: **no browser**,
+           so it survives a stale Chrome profile session. That session only
+           the interactive `blackboard-mcp login` refreshes, while the REST
+           cookie is kept alive indefinitely by `bridge.py`'s keep-alive —
+           making the browser the fragile part of the old download path.
+        3. Playwright click-and-intercept — the fallback, for an item with no
+           usable `permanentUrl`, or when path 2's GET is rejected (e.g. the
+           REST cookie itself finally lapsed and `/bbcswebdav/` bounced to a
+           login page, caught by `persist_download`'s signature check).
         """
         if not course_id.startswith("_") or not course_id.endswith("_1"):
             raise ValueError("course_id invalido")
@@ -369,33 +379,63 @@ class BlackboardClient:
         title = str(item.get("title") or "")
         if str(item.get("contentHandler") or "") == "resource/x-bb-externallink":
             return await self._download_external_link(course_id, content_id, title, item, kind)
+        file_url = self._file_permanent_url(item, course_id)
+        if file_url is not None:
+            try:
+                return await self._get_same_host_material(
+                    course_id, content_id, title, file_url, kind
+                )
+            except (RuntimeError, ValueError):
+                # The permanentUrl GET did not yield the material (REST cookie
+                # finally lapsed, an unexpected redirect, a signature
+                # mismatch). Fall through to the browser rather than fail —
+                # worst case is the pre-existing behaviour.
+                pass
         return await self._download_via_playwright(course_id, content_id, title, kind)
 
-    async def _download_external_link(
-        self, course_id: str, content_id: str, title: str, item: dict[str, Any], kind: str = "pdf"
-    ) -> dict[str, str | int]:
-        """Only followed when the link stays on Blackboard's own host — this
-        content type is ALSO how a professor links to a genuinely external
-        site (YouTube, an article), which must never receive our session
-        cookies nor be silently treated as an archivable file."""
-        from .downloads import MAX_DOWNLOAD_BYTES, download_dir, persist_download
+    def _file_permanent_url(self, item: dict[str, Any], course_id: str) -> str | None:
+        """The absolute, same-host `/bbcswebdav/` URL of a `resource/x-bb-file`
+        item's declared file — or None when the item does not carry one.
 
-        detail = (item.get("contentDetail") or {}).get("resource/x-bb-externallink") or {}
-        url = str(detail.get("url") or "")
+        `permanentUrl` is a site-relative path in the item's own REST
+        metadata; it is resolved against `base_url` and then held to the SAME
+        closed set of Blackboard content routes the browser path enforces
+        (`_is_blackboard_content_route`) and the same host `_download_external_
+        link` trusts. Anything else returns None → Playwright fallback."""
+        file_ref = ((item.get("contentDetail") or {}).get("resource/x-bb-file") or {}).get("file") or {}
+        raw = str(file_ref.get("permanentUrl") or "").strip()
+        if not raw:
+            return None
+        resolved = urljoin(self.settings.base_url.rstrip("/") + "/", raw.lstrip("/"))
+        parsed = urlparse(resolved)
         expected_host = (urlparse(self.settings.base_url).hostname or "").lower()
-        actual_host = (urlparse(url).hostname or "").lower()
-        if not url or not actual_host or actual_host != expected_host:
-            raise ValueError("link externo nao aponta para o proprio Blackboard; nao arquivado automaticamente")
+        if (parsed.hostname or "").lower() != expected_host:
+            return None
+        if not _is_blackboard_content_route(parsed.path, course_id):
+            return None
+        return resolved
+
+    async def _get_same_host_material(
+        self, course_id: str, content_id: str, title: str, url: str, kind: str = "pdf"
+    ) -> dict[str, str | int]:
+        """Authenticated GET of a same-host Blackboard file URL, then a
+        signature-verified persist. No browser — works whenever the REST
+        session cookie is valid. Shared by the externallink path and the
+        `x-bb-file` `permanentUrl` fast path; the caller is responsible for
+        proving `url` stays on Blackboard's own host first."""
+        from .downloads import MAX_BYTES_BY_KIND, MAX_DOWNLOAD_BYTES, download_dir, persist_download
+
+        teto = MAX_BYTES_BY_KIND.get(kind, MAX_DOWNLOAD_BYTES)
         async with httpx.AsyncClient(cookies=self._session._cookies, follow_redirects=True, timeout=30.0) as hc:
             response = await hc.get(url)
             if response.status_code >= 400:
-                raise ValueError("Blackboard recusou o link do material")
+                raise ValueError("Blackboard recusou o material")
             declared_size = response.headers.get("content-length")
-            if declared_size and declared_size.isdecimal() and int(declared_size) > MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+            if declared_size and declared_size.isdecimal() and int(declared_size) > teto:
+                raise ValueError(f"material {kind} excede o limite de {teto // 1024 // 1024} MiB")
             payload = response.content
-        if len(payload) > MAX_DOWNLOAD_BYTES:
-            raise ValueError(f"material excede o limite de {MAX_DOWNLOAD_BYTES // 1024 // 1024} MiB")
+        if len(payload) > teto:
+            raise ValueError(f"material {kind} excede o limite de {teto // 1024 // 1024} MiB")
         directory = download_dir(self.settings.data_home, course_id)
         with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
             handle.write(payload)
@@ -404,6 +444,21 @@ class BlackboardClient:
             self.settings.data_home, course_id=course_id, content_id=content_id,
             title=title, suggested_filename=title, temporary_path=temporary, kind=kind,
         )
+
+    async def _download_external_link(
+        self, course_id: str, content_id: str, title: str, item: dict[str, Any], kind: str = "pdf"
+    ) -> dict[str, str | int]:
+        """Only followed when the link stays on Blackboard's own host — this
+        content type is ALSO how a professor links to a genuinely external
+        site (YouTube, an article), which must never receive our session
+        cookies nor be silently treated as an archivable file."""
+        detail = (item.get("contentDetail") or {}).get("resource/x-bb-externallink") or {}
+        url = str(detail.get("url") or "")
+        expected_host = (urlparse(self.settings.base_url).hostname or "").lower()
+        actual_host = (urlparse(url).hostname or "").lower()
+        if not url or not actual_host or actual_host != expected_host:
+            raise ValueError("link externo nao aponta para o proprio Blackboard; nao arquivado automaticamente")
+        return await self._get_same_host_material(course_id, content_id, title, url, kind)
 
     async def _download_via_playwright(
         self, course_id: str, content_id: str, title: str, kind: str = "pdf"
