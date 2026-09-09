@@ -128,3 +128,124 @@ async def test_download_content_keeps_playwright_path_for_regular_files(
 
     result = await client.download_content("_1189334_1", "_1_1")
     assert result == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# `resource/x-bb-file` with a `permanentUrl`: the SAME authenticated GET,
+# reached from the item's own REST metadata — no browser, so a stale Chrome
+# profile session no longer blocks a download (achado ao vivo 2026-09-08: a
+# sessão REST seguia viva pelo keep-alive, mas TODO PDF de aula falhava porque
+# o único caminho para `x-bb-file` era o Playwright).
+# ---------------------------------------------------------------------------
+BASE_HOST = "bb.cruzeirodosulvirtual.com.br"
+
+
+def _x_bb_file_item(permanent_url: str | None, *, mime: str = "application/pdf") -> dict:
+    file_ref: dict = {"fileName": "Aula-05.pdf", "mimeType": mime, "fileSize": 109}
+    if permanent_url is not None:
+        file_ref["permanentUrl"] = permanent_url
+    return {
+        "id": "_23707539_1",
+        "title": "Aula05_expressoes_regulares.pdf",
+        "contentHandler": "resource/x-bb-file",
+        "contentDetail": {"resource/x-bb-file": {"file": file_ref}},
+    }
+
+
+def test_file_permanent_url_resolves_and_gates_the_route(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    ok = client._file_permanent_url(
+        _x_bb_file_item("/bbcswebdav/pid-23707539-dt-content-rid-337056772_1/xid-337056772_1"),
+        "_1169577_1",
+    )
+    assert ok == f"https://{BASE_HOST}/bbcswebdav/pid-23707539-dt-content-rid-337056772_1/xid-337056772_1"
+
+    # No permanentUrl → None (caller falls back to Playwright).
+    assert client._file_permanent_url(_x_bb_file_item(None), "_1169577_1") is None
+    # Cross-host absolute URL → None: the authenticated cookie never leaves BB.
+    assert client._file_permanent_url(
+        _x_bb_file_item("https://evil.example.com/bbcswebdav/xid-1_1"), "_1169577_1"
+    ) is None
+    # Same host but off the closed content-route set → None.
+    assert client._file_permanent_url(
+        _x_bb_file_item(f"https://{BASE_HOST}/webapps/blackboard/execute/content/file?cmd=view"),
+        "_1169577_1",
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_x_bb_file_downloads_via_permanenturl_without_playwright(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+    client._session._cookies = {"BbRouter": "expires:1,timeout:28800,xsrf:tok"}
+    pdf_bytes = b"%PDF-1.7\n" + b"x" * 100
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, content=pdf_bytes, headers={"content-type": "application/pdf"})
+
+    _mock_transport(monkeypatch, handler)
+    monkeypatch.setattr(
+        client, "_rest_get",
+        AsyncMock(return_value=_x_bb_file_item("/bbcswebdav/pid-23707539-dt-content-rid-337056772_1/xid-337056772_1")),
+    )
+    monkeypatch.setattr(
+        client, "_download_via_playwright",
+        AsyncMock(side_effect=AssertionError("browser must not be touched when permanentUrl works")),
+    )
+
+    receipt = await client.download_content("_1169577_1", "_23707539_1")
+    assert receipt["size_bytes"] == len(pdf_bytes)
+    assert seen["url"].endswith("/bbcswebdav/pid-23707539-dt-content-rid-337056772_1/xid-337056772_1")
+
+
+@pytest.mark.asyncio
+async def test_x_bb_file_permanenturl_login_bounce_falls_back_to_playwright(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the REST cookie itself finally lapsed, `/bbcswebdav/` answers with a
+    login page (200 + HTML). `persist_download`'s signature check rejects it,
+    and the download must still fall through to the browser, not error out."""
+    client = _client(tmp_path)
+    client._session._cookies = {"BbRouter": "expires:1,timeout:28800,xsrf:tok"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<!doctype html>\n<html>login", headers={"content-type": "text/html"})
+
+    _mock_transport(monkeypatch, handler)
+    monkeypatch.setattr(
+        client, "_rest_get",
+        AsyncMock(return_value=_x_bb_file_item("/bbcswebdav/pid-1-dt-content-rid-1_1/xid-1_1")),
+    )
+    monkeypatch.setattr(client, "_download_via_playwright", AsyncMock(return_value={"ok": "via browser"}))
+
+    result = await client.download_content("_1169577_1", "_23707539_1")
+    assert result == {"ok": "via browser"}
+
+
+@pytest.mark.asyncio
+async def test_x_bb_file_permanenturl_carries_the_declared_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `.md` handed to `archive_declared_pdfs` arrives here as kind='text';
+    the signature check has to run the text rule, not demand `%PDF-`."""
+    client = _client(tmp_path)
+    client._session._cookies = {"BbRouter": "expires:1,timeout:28800,xsrf:tok"}
+    md_bytes = "# Exercícios de Expressões Regulares\n".encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=md_bytes, headers={"content-type": "text/markdown"})
+
+    _mock_transport(monkeypatch, handler)
+    item = _x_bb_file_item("/bbcswebdav/pid-1-dt-content-rid-1_1/xid-1_1", mime="application/octet-stream")
+    item["title"] = "material-estudante-expressoes-regulares-vfinal.md"
+    monkeypatch.setattr(client, "_rest_get", AsyncMock(return_value=item))
+    monkeypatch.setattr(
+        client, "_download_via_playwright",
+        AsyncMock(side_effect=AssertionError("text file downloaded fine via REST")),
+    )
+
+    receipt = await client.download_content("_1169577_1", "_23707539_1", "text")
+    assert receipt["size_bytes"] == len(md_bytes)
