@@ -119,6 +119,12 @@ def persist_download(
         "content_id": content_id,
         "title": title,
         "filename": target.name,
+        # O FORMATO que `verify_signature` já provou (o magic byte bateu).
+        # Sem isto o consumidor (SOBER) re-adivinha o tipo pelo sufixo do
+        # TÍTULO — que costuma ser prosa ("Apostila 02 PDM" é um `.pptx`,
+        # "Código fonte utilizando Structs" é um `.cpp`) — e roda o extrator
+        # errado (real: pypdfium2 num ZIP, "Data format error" em loop).
+        "kind": kind,
         "sha256": digest,
         "size_bytes": size,
         "downloaded_at": datetime.now(UTC).isoformat(),
@@ -156,6 +162,16 @@ def verified_receipt(data_home: Path, *, course_id: str, content_id: str) -> dic
         return None
 
 
+_VERIFY_KINDS = frozenset({"pdf", "text", "office"})
+
+
+def _receipt_kind(receipt: dict) -> str:
+    """The proven format of a receipt. Receipts written before this field
+    existed were all `%PDF-`-verified (the only path then), so default 'pdf'."""
+    kind = receipt.get("kind")
+    return kind if kind in _VERIFY_KINDS else "pdf"
+
+
 def list_verified_receipts(data_home: Path, *, course_id: str) -> list[dict]:
     """List only intact download receipts, without exposing local paths."""
     directory = download_dir(data_home, course_id)
@@ -173,6 +189,7 @@ def list_verified_receipts(data_home: Path, *, course_id: str) -> list[dict]:
                 "course_id": course_id,
                 "content_id": content_id,
                 "title": str(receipt.get("title") or "Material Blackboard"),
+                "kind": _receipt_kind(receipt),
                 "sha256": str(receipt["sha256"]),
                 "size_bytes": int(receipt["size_bytes"]),
                 "downloaded_at": str(receipt.get("downloaded_at") or ""),

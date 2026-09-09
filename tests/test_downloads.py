@@ -72,7 +72,24 @@ def test_list_verified_receipts_excludes_paths_and_tampered_files(tmp_path: Path
     rows = list_verified_receipts(tmp_path / "state", course_id="_course_1")
     assert rows == [{
         "course_id": "_course_1", "content_id": "_item_1", "title": "Aula",
+        "kind": "pdf",
         "sha256": receipt["sha256"], "size_bytes": receipt["size_bytes"],
         "downloaded_at": receipt["downloaded_at"],
     }]
     assert "filename" not in rows[0]
+
+
+def test_receipt_carries_the_proven_kind(tmp_path: Path) -> None:
+    """A `.pptx` (`PK\\x03\\x04`) verificado como office tem que dizer 'office'
+    no recibo — senão o consumidor re-adivinha 'pdf' pelo título em prosa e
+    roda o extrator errado (real: pypdfium2 num ZIP, 2026-09-09)."""
+    temp = tmp_path / "t"
+    temp.write_bytes(b"PK\x03\x04" + b"rest of a zip" * 4)
+    receipt = persist_download(
+        tmp_path / "state", course_id="_c_1", content_id="_i_1",
+        title="Apostila 02 PDM", suggested_filename="Apostila 02 PDM",
+        temporary_path=temp, kind="office",
+    )
+    assert receipt["kind"] == "office"
+    rows = list_verified_receipts(tmp_path / "state", course_id="_c_1")
+    assert rows[0]["kind"] == "office"
