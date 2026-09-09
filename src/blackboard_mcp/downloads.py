@@ -165,11 +165,33 @@ def verified_receipt(data_home: Path, *, course_id: str, content_id: str) -> dic
 _VERIFY_KINDS = frozenset({"pdf", "text", "office"})
 
 
-def _receipt_kind(receipt: dict) -> str:
-    """The proven format of a receipt. Receipts written before this field
-    existed were all `%PDF-`-verified (the only path then), so default 'pdf'."""
+def _sniff_kind(artifact: Path) -> str:
+    """Magic-byte format of a file already on disk. Used for receipts written
+    before `kind` was recorded — defaulting those to 'pdf' made the consumer
+    (SOBER) run pypdfium2 on a `.pptx` ZIP in a loop (real, 2026-09-09,
+    "Apostila 02 PDM")."""
+    try:
+        with artifact.open("rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return "pdf"
+    if head.startswith(b"%PDF-"):
+        return "pdf"
+    if head.startswith(b"PK\x03\x04"):
+        return "office"
+    return "text"
+
+
+def _receipt_kind(receipt: dict, artifact: Path | None = None) -> str:
+    """The proven format of a receipt. Prefer the recorded `kind`; for an
+    older receipt without it, sniff the artifact's magic bytes rather than
+    assuming 'pdf'."""
     kind = receipt.get("kind")
-    return kind if kind in _VERIFY_KINDS else "pdf"
+    if kind in _VERIFY_KINDS:
+        return kind
+    if artifact is not None:
+        return _sniff_kind(artifact)
+    return "pdf"
 
 
 def list_verified_receipts(data_home: Path, *, course_id: str) -> list[dict]:
@@ -185,11 +207,12 @@ def list_verified_receipts(data_home: Path, *, course_id: str) -> list[dict]:
             receipt = verified_receipt(data_home, course_id=course_id, content_id=content_id)
             if receipt is None:
                 continue
+            artifact = receipt_path.parent / str(receipt.get("filename") or "")
             rows.append({
                 "course_id": course_id,
                 "content_id": content_id,
                 "title": str(receipt.get("title") or "Material Blackboard"),
-                "kind": _receipt_kind(receipt),
+                "kind": _receipt_kind(receipt, artifact),
                 "sha256": str(receipt["sha256"]),
                 "size_bytes": int(receipt["size_bytes"]),
                 "downloaded_at": str(receipt.get("downloaded_at") or ""),
