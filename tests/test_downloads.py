@@ -93,3 +93,24 @@ def test_receipt_carries_the_proven_kind(tmp_path: Path) -> None:
     assert receipt["kind"] == "office"
     rows = list_verified_receipts(tmp_path / "state", course_id="_c_1")
     assert rows[0]["kind"] == "office"
+
+
+def test_legacy_receipt_without_kind_sniffs_magic_bytes(tmp_path: Path) -> None:
+    """Recibo antigo (sem `kind`) de um `.pptx` não pode virar 'pdf' — o
+    consumidor rodava pypdfium2 num ZIP em loop (real, 2026-09-09)."""
+    import json as _json
+    state = tmp_path / "state"
+    temp = tmp_path / "t"
+    temp.write_bytes(b"PK\x03\x04" + b"corpo pptx" * 8)
+    receipt = persist_download(
+        state, course_id="_c_1", content_id="_i_1", title="Apostila 02 PDM",
+        suggested_filename="Apostila 02 PDM", temporary_path=temp, kind="office",
+    )
+    # simula recibo LEGADO: remove o campo `kind` do .json em disco
+    rp = next((state / "downloads").rglob("*.json"))
+    data = _json.loads(rp.read_text())
+    del data["kind"]
+    rp.write_text(_json.dumps(data))
+
+    rows = list_verified_receipts(state, course_id="_c_1")
+    assert rows[0]["kind"] == "office"  # veio do magic byte, não do default 'pdf'
