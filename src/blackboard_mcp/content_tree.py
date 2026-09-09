@@ -51,10 +51,23 @@ from typing import Any
 _CONTAINER_HANDLERS = {"resource/x-bb-folder": "folder", "resource/x-bb-lesson": "learning_module"}
 
 
+def _file_detail(raw: dict[str, Any]) -> dict[str, Any]:
+    return ((raw.get("contentDetail") or {}).get("resource/x-bb-file") or {}).get("file") or {}
+
+
 def _file_mime_type(raw: dict[str, Any]) -> str | None:
-    detail = ((raw.get("contentDetail") or {}).get("resource/x-bb-file") or {}).get("file") or {}
-    mime_type = detail.get("mimeType")
+    mime_type = _file_detail(raw).get("mimeType")
     return str(mime_type) if mime_type else None
+
+
+def _file_name(raw: dict[str, Any]) -> str | None:
+    """The real uploaded filename of a `resource/x-bb-file` leaf. The title a
+    professor types is often prose ("Código fonte utilizando Structs") while
+    the file itself is `StructExercicio.cpp` — same class as the A88 PDF whose
+    title carried no `.pdf`. `archive.declared_kind` needs the extension that
+    is actually on the file, not the one the title happens to lack."""
+    name = _file_detail(raw).get("fileName")
+    return str(name) if name else None
 
 
 def _external_url(raw: dict[str, Any]) -> str | None:
@@ -77,6 +90,7 @@ def normalize_tree_row(raw: dict[str, Any], *, depth: int, parent_id: str | None
         "depth": depth,
         "due_at": str(due_at) if due_at else None,
         "mime_type": _file_mime_type(raw),
+        "file_name": _file_name(raw),
         "content_handler": handler,
         "external_url": _external_url(raw),
         "parent_id": parent_id,

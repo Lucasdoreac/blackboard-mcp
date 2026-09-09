@@ -58,6 +58,33 @@ _TEXT_EXTS = frozenset({
 # declarado essa checagem não existe, e o buraco voltaria pela porta nova.
 _OFFICE_EXTS = frozenset({".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"})
 
+# Tipos MIME de Office que o Blackboard reporta em `file.mimeType`. Texto usa
+# o prefixo `text/` (inclui `text/x-c`, `text/plain`, `text/markdown`); PDF é
+# `application/pdf`. Real incident (2026-09-09, Teoria dos Grafos): três `.cpp`
+# autorais com título em prosa ("Código fonte utilizando Structs") e
+# `fileName`=`StructExercicio.cpp`/`mimeType`=`text/x-c` não eram nem
+# candidatos — `declared_kind` só olhava o sufixo do TÍTULO. Mesma classe da
+# A88 (PDF sem `.pdf` no título), um degrau abaixo.
+_OFFICE_MIME = frozenset({
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+})
+
+
+def _kind_from_name(name: str) -> str | None:
+    suffix = Path(name).suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in _TEXT_EXTS:
+        return "text"
+    if suffix in _OFFICE_EXTS:
+        return "office"
+    return None
+
 
 def declared_kind(item: dict[str, Any], *, expected_host: str | None = None) -> str | None:
     """Qual FORMATO este item declara ser: 'pdf', 'text', 'office' — ou None.
@@ -66,23 +93,35 @@ def declared_kind(item: dict[str, Any], *, expected_host: str | None = None) -> 
     a assinatura exigida no download (`downloads.verify_signature`) e o teto de
     tamanho. Um booleano não conseguia carregar essa informação adiante, e era
     por isso que o segundo gate só sabia cobrar `%PDF-`.
+
+    Sinais do mais forte pro mais fraco: o `mimeType` e o `fileName` do PRÓPRIO
+    registro de arquivo do Blackboard, depois o sufixo do TÍTULO, e por último a
+    heurística de link mesmo-host. Um título em prosa não esconde mais um
+    `.cpp` cujo arquivo declara `text/x-c`.
     """
     if item.get("kind") != "item":
         return None
-    if item.get("mime_type") == "application/pdf":
+    mime = str(item.get("mime_type") or "").strip().lower()
+    if mime == "application/pdf":
         return "pdf"
-    title = str(item.get("title") or "").strip()
-    suffix = Path(title).suffix.lower()
-    if suffix in _TEXT_EXTS:
-        return "text"
-    if suffix in _OFFICE_EXTS:
+    if mime in _OFFICE_MIME:
         return "office"
+    if mime.startswith("text/"):
+        return "text"
+    file_name = str(item.get("file_name") or "").strip()
+    if file_name:
+        by_file = _kind_from_name(file_name)
+        if by_file is not None:
+            return by_file
+    title = str(item.get("title") or "").strip()
+    by_title = _kind_from_name(title)
+    if by_title is not None:
+        return by_title
     if expected_host is not None and item.get("content_handler") == "resource/x-bb-externallink":
         url = str(item.get("external_url") or "")
         if url and (urlparse(url).hostname or "").lower() == expected_host.lower():
             return "pdf"
-    lowered = title.casefold()
-    if lowered.endswith(".pdf") or "arquivo em pdf" in lowered:
+    if "arquivo em pdf" in title.casefold():
         return "pdf"
     return None
 

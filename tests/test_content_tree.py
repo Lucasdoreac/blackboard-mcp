@@ -5,8 +5,8 @@ def test_normalizes_a_folder_as_a_container() -> None:
     row = normalize_tree_row({"id": "_1_1", "title": "Documentos", "contentHandler": "resource/x-bb-folder"}, depth=0)
     assert row == {
         "id": "_1_1", "title": "Documentos", "kind": "folder", "depth": 0, "due_at": None,
-        "mime_type": None, "content_handler": "resource/x-bb-folder", "external_url": None,
-        "parent_id": None,
+        "mime_type": None, "file_name": None, "content_handler": "resource/x-bb-folder",
+        "external_url": None, "parent_id": None,
     }
 
 
@@ -40,6 +40,27 @@ def test_carries_the_real_file_mime_type_when_present() -> None:
 def test_mime_type_is_none_when_absent() -> None:
     row = normalize_tree_row({"id": "_1_1", "title": "Link externo", "contentHandler": "resource/x-bb-externallink"}, depth=1)
     assert row["mime_type"] is None
+
+
+def test_carries_the_real_file_name_when_the_title_is_prose() -> None:
+    """Real incident (2026-09-09, Teoria dos Grafos): `Código fonte utilizando
+    Structs` is a `.cpp` (`fileName`=`StructExercicio.cpp`, `mimeType`=`text/x-c`)
+    whose title carries no extension at all — `declared_kind` needs the name on
+    the file, not the one the professor typed."""
+    row = normalize_tree_row({
+        "id": "_1_1", "title": "Código fonte Exercício utilizando Structs",
+        "contentHandler": "resource/x-bb-file",
+        "contentDetail": {"resource/x-bb-file": {"file": {
+            "mimeType": "text/x-c", "fileName": "StructExercicio.cpp",
+        }}},
+    }, depth=2)
+    assert row["file_name"] == "StructExercicio.cpp"
+    assert row["mime_type"] == "text/x-c"
+
+
+def test_file_name_is_none_when_absent() -> None:
+    row = normalize_tree_row({"id": "_1_1", "title": "Link externo", "contentHandler": "resource/x-bb-externallink"}, depth=1)
+    assert row["file_name"] is None
 
 
 def test_carries_the_externallink_url_when_present() -> None:
