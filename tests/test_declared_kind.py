@@ -36,6 +36,31 @@ def test_mime_type_continua_mandando_mais_que_o_titulo() -> None:
     assert declared_kind(_item("Aula02_sem_extensao", mime_type="application/pdf")) == "pdf"
 
 
+@pytest.mark.parametrize(
+    "mime,esperado",
+    [
+        ("text/x-c", "text"), ("text/plain", "text"), ("text/markdown", "text"),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "office"),
+        ("application/octet-stream", None), ("video/mp4", None),
+    ],
+)
+def test_mime_de_texto_e_office_tambem_classifica(mime: str, esperado) -> None:
+    """Real incident (2026-09-09): três `.cpp` com `mimeType`=`text/x-c` e
+    título em prosa não eram nem candidatos."""
+    assert declared_kind(_item("Código fonte utilizando Structs", mime_type=mime)) == esperado
+
+
+def test_file_name_pega_o_que_o_titulo_esconde() -> None:
+    """O título é prosa; a extensão de verdade está no `fileName` do arquivo —
+    mesma classe da A88, um degrau abaixo (texto/código em vez de PDF)."""
+    item = _item("Código fonte Exercício utilizando Structs", file_name="StructExercicio.cpp")
+    assert declared_kind(item) == "text"
+    assert declared_kind(_item("Relato de Experiência", file_name="Modelo UDF.docx")) == "office"
+    assert declared_kind(_item("Plano de ensino", file_name="plano.pdf")) == "pdf"
+    # fileName sem extensão útil e título sem nada → continua None
+    assert declared_kind(_item("Videoaula", file_name="stream")) is None
+
+
 def test_is_declared_pdf_continua_valendo_para_quem_ja_chamava() -> None:
     assert is_declared_pdf(_item("Aula.pdf")) is True
     assert is_declared_pdf(_item("Videoaula 3")) is False
