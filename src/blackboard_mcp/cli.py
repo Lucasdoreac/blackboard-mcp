@@ -39,16 +39,19 @@ def _prompt_profile(default: str) -> str:
         return profile
 
 
-async def _wait_for_login(client: BlackboardClient, timeout_s: int = 600, interval_s: int = 3) -> bool:
-    waited = 0
-    while waited < timeout_s:
-        await asyncio.sleep(interval_s)
-        waited += interval_s
-        status = await client.auth_status()
-        if status.get("authenticated"):
-            return True
-        if waited % 15 == 0:
-            print(f"  ainda aguardando o login... ({waited}s)")
+def _run_login(profile: str) -> bool:
+    """Formato do `nlm login`: abre, espera, grava a sessão provada, confirma."""
+    client = BlackboardClient(Settings.from_profile(profile))
+    print("\nAbrindo o Chrome para voce fazer login (e MFA, se a instituicao usar)...")
+    client.open_login_window()
+    print("Conclua o login na janela que abriu; este comando espera e grava a sessao sozinho.\n")
+    result = asyncio.run(client.complete_login(on_progress=lambda msg: print(f"  {msg}")))
+    if result.get("authenticated"):
+        print(f"\nLogin confirmado e sessao gravada para o perfil '{profile}'.")
+        print("Pode fechar o Chrome: a bridge usa a sessao gravada e a mantem viva.")
+        return True
+    print("\nNao detectei o login a tempo. Rode de novo:")
+    print(f"  uv run blackboard-mcp login --profile {profile}")
     return False
 
 
@@ -60,18 +63,9 @@ def _run_setup(profile_hint: str) -> None:
     save_profile_config(settings.data_home, profile, {"base_url": base_url})
     print(f"\nConfigurado: perfil '{profile}' -> {base_url}")
 
-    client = BlackboardClient(Settings.from_profile(profile))
-    print("\nAbrindo o Chrome para voce fazer login (e MFA, se a instituicao usar)...")
-    client.open_login_window()
-    print("Assim que terminar o login na janela que abriu, eu volto a checar sozinho.\n")
-
-    if asyncio.run(_wait_for_login(client)):
-        print(f"\nLogin confirmado para o perfil '{profile}'.")
+    if _run_login(profile):
         print("Proximo passo, pra conferir que enxerga suas disciplinas:")
         print(f"  uv run blackboard-mcp courses --profile {profile}")
-    else:
-        print("\nNao detectei o login a tempo. Termine o login na janela e rode:")
-        print(f"  uv run blackboard-mcp auth-status --profile {profile}")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -93,6 +87,10 @@ def main() -> None:
     if args.command == "setup":
         _run_setup(args.profile)
         return
+    if args.command == "login":
+        if not _run_login(args.profile):
+            raise SystemExit(1)
+        return
     if args.command == "serve":
         create_server(args.profile).run()
         return
@@ -110,9 +108,7 @@ def main() -> None:
         return
     client = BlackboardClient(Settings.from_profile(args.profile))
     try:
-        if args.command == "login":
-            result = client.open_login_window()
-        elif args.command == "auth-status":
+        if args.command == "auth-status":
             result = asyncio.run(client.auth_status())
         elif args.command == "terms":
             result = asyncio.run(client.list_terms())
