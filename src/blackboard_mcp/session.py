@@ -96,6 +96,10 @@ class BlackboardSession:
         self._xsrf = xsrf
         self._save()
 
+    def export_cookies(self) -> list[dict[str, Any]]:
+        """O jar no formato que `adopt` aceita (inclui rotação absorvida em `get`)."""
+        return [{"name": name, "value": value} for name, value in self._cookies.items()]
+
     def reload_from_disk(self) -> bool:
         """Recarrega `session.json`; True se trouxe cookie DIFERENTE e utilizável.
 

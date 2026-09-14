@@ -1,19 +1,16 @@
 """`blackboard-mcp setup` — the guided, no-code-editing onboarding flow.
 
 The interactive orchestration (`_run_setup`: opens a real Chrome window,
-polls real auth status) is validated by actual execution, not mocked here
-— same discipline already used for the other `while True` loops in this
-project. What's unit-tested is the pure input validation and the polling
-loop's own success/timeout logic in isolation.
+waits for the login) is validated by actual execution. What's unit-tested
+here is the pure input validation; the login wait itself is covered in
+`test_complete_login.py`.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
-from blackboard_mcp.cli import _prompt_base_url, _prompt_profile, _wait_for_login
+from blackboard_mcp.cli import _prompt_base_url, _prompt_profile
 
 
 def test_prompt_base_url_adds_https_when_scheme_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,19 +54,3 @@ def test_prompt_profile_reprompts_on_an_invalid_name(monkeypatch: pytest.MonkeyP
     answers = iter(["nome invalido", "minha-faculdade"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert _prompt_profile("default") == "minha-faculdade"
-
-
-@pytest.mark.asyncio
-async def test_wait_for_login_returns_true_as_soon_as_authenticated() -> None:
-    client = AsyncMock()
-    client.auth_status = AsyncMock(return_value={"authenticated": True})
-    assert await _wait_for_login(client, timeout_s=30, interval_s=1) is True
-    client.auth_status.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_wait_for_login_gives_up_after_the_timeout() -> None:
-    client = AsyncMock()
-    client.auth_status = AsyncMock(return_value={"authenticated": False})
-    assert await _wait_for_login(client, timeout_s=3, interval_s=1) is False
-    assert client.auth_status.await_count == 3

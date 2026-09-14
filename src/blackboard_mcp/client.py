@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -71,6 +72,28 @@ def ensure_pdfs_download_externally(profile_dir: Path) -> None:
 # resolvido contra a página atual, mesma origem, e o conjunto segue fechado.
 def _is_blackboard_content_route(path: str, course_id: str) -> bool:
     return path.startswith(f"/ultra/courses/{course_id}/") or path.startswith("/bbcswebdav/")
+
+
+def login_stage(urls: list[str], base_url: str) -> tuple[str, str | None]:
+    """Onde está o login, lido só das URLs das abas (nunca navega).
+
+    `("blackboard", host)` se alguma aba chegou ao Ultra do host configurado;
+    `("other_host", host)` se há aba web em OUTRO host — o portal da
+    instituição, onde o dono parou em 2026-09-14 achando que já estava logado;
+    `("waiting", None)` caso contrário. Só o host é devolvido: URL de SSO
+    carrega token no path/query e não pode ir para o terminal.
+    """
+    expected = urlparse(base_url)
+    other: str | None = None
+    for url in urls:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if parsed.scheme == expected.scheme and parsed.netloc == expected.netloc and parsed.path.startswith("/ultra"):
+            return "blackboard", parsed.netloc
+        if parsed.netloc != expected.netloc and other is None:
+            other = parsed.netloc
+    return ("other_host", other) if other else ("waiting", None)
 
 
 class BlackboardClient:
@@ -140,20 +163,73 @@ class BlackboardClient:
         if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc or not parsed.path.startswith("/ultra"):
             raise AuthenticationRequired("a sessao redirecionou para login")
 
-    async def begin_login(self, timeout_s: int = 600) -> dict[str, Any]:
-        """Open interactive Chrome. User types credentials; no credential is observed."""
-        playwright, context, attached = await self._context(headless=False)
+    async def complete_login(
+        self,
+        timeout_s: float = 600,
+        interval_s: float = 3,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Mesmo formato do `nlm login`: espera o dono concluir o login na janela
+        CDP, captura o cookie UMA vez, prova por REST e só então grava
+        `session.json`. Depois disso o Chrome pode ser fechado.
+
+        Antes, `login` só abria a janela e saía: o cookie era capturado de forma
+        preguiçosa, no primeiro comando que precisasse do Blackboard — e só se a
+        janela ainda estivesse aberta. O poll aqui LÊ as URLs das abas, nunca
+        navega: abrir uma aba a cada poll (o que `auth_status` faz) atropelaria
+        o SSO/MFA em andamento na janela do dono.
+        """
+        notify = on_progress or (lambda _msg: None)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + timeout_s
+        next_heartbeat = started + 30
+        hinted_host: str | None = None
+        browser = None
+        playwright = await async_playwright().start()
         try:
-            page = await self._page(context)
-            await self._open_course(page)
-            deadline = asyncio.get_running_loop().time() + timeout_s
-            while asyncio.get_running_loop().time() < deadline:
-                if page.url.startswith(self.settings.base_url + "/ultra"):
-                    return {"authenticated": True, "profile": self.settings.profile}
-                await asyncio.sleep(2)
+            while loop.time() < deadline:
+                if browser is None or not browser.is_connected():
+                    try:
+                        browser = await playwright.chromium.connect_over_cdp(
+                            f"http://127.0.0.1:{self.settings.debug_port}"
+                        )
+                    except Exception:
+                        browser = None
+                if browser is not None and browser.contexts:
+                    context = browser.contexts[0]
+                    stage, host = login_stage([page.url for page in context.pages], self.settings.base_url)
+                    if stage == "blackboard":
+                        try:
+                            await self._adopt_verified_session(await context.cookies(self.settings.base_url))
+                            return {"authenticated": True, "profile": self.settings.profile, "session_saved": True}
+                        except SessionStale:
+                            # A aba pode estar em /ultra por instantes antes do
+                            # redirect client-side de uma sessão vencida — a
+                            # prova por REST é quem decide; segue esperando.
+                            pass
+                    elif stage == "other_host" and host != hinted_host:
+                        hinted_host = host
+                        notify(
+                            f"A janela esta em {host}, que nao e o Blackboard. Entrar no portal nao basta: "
+                            f"abra {self.settings.base_url}/ultra/course nesta mesma janela."
+                        )
+                if loop.time() >= next_heartbeat:
+                    notify(f"ainda aguardando o login... ({int(loop.time() - started)}s)")
+                    next_heartbeat += 30
+                await asyncio.sleep(interval_s)
             return {"authenticated": False, "profile": self.settings.profile, "reason": "login_timeout"}
         finally:
-            await self._close(playwright, context, attached=attached)
+            # Só desconecta o NOSSO cliente CDP; a janela do dono fica como está.
+            await playwright.stop()
+
+    async def _adopt_verified_session(self, cookies: list[dict[str, Any]]) -> None:
+        """Prova o cookie num jar descartável antes de sobrescrever `session.json`."""
+        with tempfile.TemporaryDirectory() as scratch:
+            probe = BlackboardSession(self.settings.base_url, Path(scratch), self.settings.profile)
+            probe.adopt(cookies)
+            await probe.get("/learn/api/v1/users/me", _retry_after_reload=False)
+            self._session.adopt(probe.export_cookies())
 
     def login_url(self) -> str:
         """Validated entrypoint for the system Chrome login command.
