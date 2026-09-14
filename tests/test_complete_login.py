@@ -135,3 +135,24 @@ async def test_keeps_waiting_while_chrome_is_not_reachable_yet(
 
     assert result["authenticated"] is True
     assert playwright.chromium.connect_over_cdp.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_automatic_mode_opens_one_login_tab_and_closes_it_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+    playwright = _fake_playwright(monkeypatch, [["about:blank"], [ULTRA], [ULTRA]])
+    context = playwright.chromium.connect_over_cdp.return_value.contexts[0]
+    new_page = AsyncMock()
+    context.new_page = AsyncMock(return_value=new_page)
+
+    async def fake_get(self, path, params=None, *, _retry_after_reload=True):
+        return {"id": "me"}
+
+    monkeypatch.setattr(client_mod.BlackboardSession, "get", fake_get)
+    result = await client.complete_login(timeout_s=5, interval_s=0, open_login_tab=True)
+    assert result["authenticated"] is True
+    context.new_page.assert_awaited_once()
+    new_page.goto.assert_awaited_once()
+    new_page.close.assert_awaited_once()

@@ -16,9 +16,11 @@ def create_server(profile: str) -> FastMCP:
         return await client.auth_status()
 
     @server.tool()
-    async def begin_login() -> dict:
-        """Open dedicated Chrome for manual login/MFA; no credential is read by the server."""
-        return client.open_login_window()
+    async def reauthenticate() -> dict:
+        """Recover an expired session automatically (profile SSO in the dedicated
+        Chrome, cookie proven by REST before saving); needs_owner=True when MFA
+        is required. No credential is ever read or typed."""
+        return await client.reauthenticate()
 
     @server.tool()
     async def list_courses(term: str = "") -> list[dict[str, str]]:
