@@ -37,6 +37,24 @@ class SessionStale(RuntimeError):
     """The persisted cookies were rejected; a real (Playwright) login is required."""
 
 
+class BlackboardRequestRejected(RuntimeError):
+    """A sessão está viva, mas o Blackboard recusou ESTA operação (403/404).
+
+    Achado ao vivo (2026-09-14): `get` tratava todo 401/403/4xx como sessão
+    expirada. Uma leitura sem permissão (Pensamento Computacional, coluna que o
+    aluno não lê, preferência inexistente) caía no refresh de sessão via browser
+    — que regravou `session.json` com cookie não provado e derrubou a sessão
+    boa. Recusa de operação e sessão morta são coisas diferentes."""
+
+    def __init__(self, status_code: int, path: str) -> None:
+        super().__init__(f"o Blackboard recusou a operacao ({status_code})")
+        self.status_code = status_code
+        self.path = path
+
+
+_HEALTH_PATH = "/learn/api/v1/users/me"
+
+
 def session_path(data_home: Path, profile: str) -> Path:
     return data_home / "profiles" / profile / "session.json"
 
@@ -159,18 +177,33 @@ class BlackboardSession:
         else:
             raise last_error  # pragma: no cover — loop always breaks or raises above
         self._absorb_rotated_cookies(response)
-        if response.status_code in (401, 403):
+        content_type = response.headers.get("content-type", "")
+        if response.status_code >= 400:
             # Antes de declarar a sessão morta, relê o disco: pode haver login
             # NOVO feito por fora enquanto este processo seguia com o cookie
             # velho. Só uma vez, e só se o cookie de fato mudou — sem isso
             # viraria laço de retry contra um 401 legítimo.
             if _retry_after_reload and self.reload_from_disk():
                 return await self.get(path, params, _retry_after_reload=False)
-            raise SessionStale("a sessao Blackboard foi recusada (401/403)")
-        content_type = response.headers.get("content-type", "")
-        if response.status_code >= 400 or "json" not in content_type:
+            if response.status_code != 401 and path != _HEALTH_PATH and await self._alive():
+                raise BlackboardRequestRejected(response.status_code, path)
+            raise SessionStale(f"a sessao Blackboard foi recusada ({response.status_code})")
+        if "json" not in content_type:
             raise SessionStale("a API Blackboard nao retornou JSON (sessao provavelmente expirada)")
         return response.json()
+
+    async def _alive(self) -> bool:
+        """A sessão responde `users/me`? Decide entre recusa e sessão morta."""
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, cookies=self._cookies, timeout=15.0) as client:
+                response = await client.get(
+                    _HEALTH_PATH,
+                    headers={"X-Requested-With": "XMLHttpRequest", "X-Blackboard-XSRF": self._xsrf or "",
+                             "Accept": "application/json"},
+                )
+        except httpx.TransportError:
+            return False
+        return response.status_code == 200 and "json" in response.headers.get("content-type", "")
 
     def _absorb_rotated_cookies(self, response: httpx.Response) -> None:
         """Persist any Set-Cookie rotation (BbRouter's expires rolls forward on activity)."""
@@ -188,4 +221,4 @@ class BlackboardSession:
             self._save()
 
 
-__all__ = ["BlackboardSession", "SessionStale", "extract_xsrf", "session_path"]
+__all__ = ["BlackboardRequestRejected", "BlackboardSession", "SessionStale", "extract_xsrf", "session_path"]

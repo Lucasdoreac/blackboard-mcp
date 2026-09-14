@@ -56,7 +56,7 @@ No cliente MCP, execute:
 }
 ```
 
-Ferramentas: `auth_status`, `begin_login`, `list_courses`, `list_terms`,
+Ferramentas: `auth_status`, `reauthenticate`, `list_courses`, `list_terms`,
 `register_course`, `list_registered_courses`, `bind_notebook`,
 `sync_registered_courses`, `sync_available_courses`, `list_course_content`,
 `list_course_tree`, `sync_course`, `list_assessments`, `list_announcements`,

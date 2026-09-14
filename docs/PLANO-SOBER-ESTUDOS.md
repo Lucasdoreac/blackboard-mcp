@@ -60,7 +60,7 @@ Blackboard na rede LAN/VPS.
 
 ### E1 — Blackboard MCP de leitura confiavel
 
-1. Manter `auth_status`, `begin_login`, `list_courses`,
+1. Manter `auth_status`, `reauthenticate`, `list_courses`,
    `list_course_content` (ja validados no perfil `sober`).
 2. Acrescentar recursao de pastas, itens avaliativos, prazos, anexos, documentos
    incorporados e videoaulas, sem clicar em recursos que mudam progresso.

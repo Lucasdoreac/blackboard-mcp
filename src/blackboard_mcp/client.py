@@ -16,7 +16,11 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .config import Settings
 from .content_tree import is_container, normalize_tree_row
-from .session import BlackboardSession, SessionStale
+from .session import BlackboardRequestRejected, BlackboardSession, SessionStale
+
+
+# Cabe dentro do timeout de 90s que o watchdog do SOBER dá à bridge (auth_status).
+AUTO_REAUTH_TIMEOUT_S = 75.0
 
 
 class AuthenticationRequired(RuntimeError):
@@ -102,6 +106,7 @@ class BlackboardClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._session = BlackboardSession(settings.base_url, settings.data_home, settings.profile)
+        self._reauth_lock = asyncio.Lock()
 
     async def _context(self, *, headless: bool) -> tuple[Any, BrowserContext, bool]:
         prepare_profile(self.settings.profile_dir)
@@ -168,6 +173,7 @@ class BlackboardClient:
         timeout_s: float = 600,
         interval_s: float = 3,
         on_progress: Callable[[str], None] | None = None,
+        open_login_tab: bool = False,
     ) -> dict[str, Any]:
         """Mesmo formato do `nlm login`: espera o dono concluir o login na janela
         CDP, captura o cookie UMA vez, prova por REST e só então grava
@@ -186,6 +192,7 @@ class BlackboardClient:
         next_heartbeat = started + 30
         hinted_host: str | None = None
         browser = None
+        opened_page = None
         playwright = await async_playwright().start()
         try:
             while loop.time() < deadline:
@@ -199,9 +206,20 @@ class BlackboardClient:
                 if browser is not None and browser.contexts:
                     context = browser.contexts[0]
                     stage, host = login_stage([page.url for page in context.pages], self.settings.base_url)
+                    if open_login_tab and opened_page is None and stage != "blackboard":
+                        # Reautenticação automática: sem aba no Ultra, abre UMA
+                        # aba nova no login (o SSO que lembra o perfil conclui
+                        # sozinho). Nunca navega aba existente do dono.
+                        opened_page = await context.new_page()
+                        try:
+                            await opened_page.goto(self.login_url(), wait_until="commit", timeout=30_000)
+                        except Exception:
+                            pass
                     if stage == "blackboard":
                         try:
                             await self._adopt_verified_session(await context.cookies(self.settings.base_url))
+                            if opened_page is not None:
+                                await opened_page.close()
                             return {"authenticated": True, "profile": self.settings.profile, "session_saved": True}
                         except SessionStale:
                             # A aba pode estar em /ultra por instantes antes do
@@ -288,29 +306,53 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
             raise
 
-    async def _refresh_session_from_browser(self) -> None:
-        """The only place Playwright still runs for a READ path: extract a
-        fresh cookie jar (and the XSRF embedded in BbRouter) from the
-        persistent Chrome profile. Only needed on first use after login, or
-        after the REST session goes genuinely stale."""
-        playwright, context, page, attached = await self._authenticated_page()
+    async def reauthenticate(self, timeout_s: float = AUTO_REAUTH_TIMEOUT_S) -> dict[str, Any]:
+        """Fallback automático de sessão expirada — o `ssh ubuntu` +
+        `blackboard-mcp login` que o dono fazia à mão (2026-09-14).
+
+        1. outro processo pode já ter relogado: `users/me` pelo `session.json`;
+        2. sem Chrome CDP de pé, abre a janela do perfil no login;
+        3. `complete_login` com `open_login_tab`: o SSO que lembra o perfil
+           conclui sozinho, e o cookie só é gravado depois de provado por REST.
+
+        Substitui o antigo `_refresh_session_from_browser`, que gravava o cookie
+        do browser SEM prova e travou ao ser disparado por um 403 comum. Se o
+        SSO pedir MFA, devolve `needs_owner=True` e a janela fica aberta para o
+        dono concluir. Serializado: chamadas simultâneas esperam a mesma."""
+        async with self._reauth_lock:
+            try:
+                await self._session.get("/learn/api/v1/users/me", _retry_after_reload=True)
+                return {"authenticated": True, "profile": self.settings.profile, "recovered": "already_valid"}
+            except (SessionStale, BlackboardRequestRejected):
+                pass
+            if not await asyncio.to_thread(self._cdp_available):
+                self.open_login_window()
+            result = await self.complete_login(timeout_s=timeout_s, open_login_tab=True)
+            if result.get("authenticated"):
+                return {**result, "recovered": "browser_sso"}
+            return {**result, "needs_owner": True,
+                    "owner_action": f"ssh ubuntu e rode: blackboard-mcp login --profile {self.settings.profile}"}
+
+    def _cdp_available(self) -> bool:
         try:
-            cookies = await context.cookies(self.settings.base_url)
-        finally:
-            await page.close()
-            await self._close(playwright, context, attached=attached)
-        self._session.adopt(cookies)
+            urllib.request.urlopen(f"http://127.0.0.1:{self.settings.debug_port}/json/version", timeout=1)
+            return True
+        except Exception:
+            return False
 
     async def _rest_get(self, path: str, params: dict[str, str] | None = None) -> Any:
         """GET one internal `/learn/api/v1/...` endpoint, no browser in the
-        common case. Retries exactly once through a fresh Playwright cookie
-        extraction if the persisted session was rejected."""
-        if not self._session.configured:
-            await self._refresh_session_from_browser()
+        common case. Sessão expirada dispara UMA reautenticação automática e
+        repete; recusa de operação (403/404 com sessão viva) sobe direto."""
         try:
             return await self._session.get(path, params)
         except SessionStale:
-            await self._refresh_session_from_browser()
+            result = await self.reauthenticate()
+            if not result.get("authenticated"):
+                raise AuthenticationRequired(
+                    "a sessao Blackboard expirou e o login automatico nao concluiu; "
+                    f"rode `blackboard-mcp login --profile {self.settings.profile}`"
+                ) from None
             try:
                 return await self._session.get(path, params)
             except SessionStale as exc:
