@@ -91,6 +91,18 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_assessments(course_id)
 
     @server.tool()
+    async def get_assessment(course_id: str, content_id: str) -> dict:
+        """Read one activity's instructions, deadline, attempt limits and
+        embedded attachments list; read-only, never starts an attempt."""
+        return await client.get_assessment(course_id, content_id)
+
+    @server.tool()
+    async def read_assessment_attachment(course_id: str, content_id: str, index: int) -> dict:
+        """Base64 of one image embedded in an activity's instructions (same
+        Blackboard host only, magic-byte proven image, 5 MiB cap)."""
+        return await client.read_assessment_attachment(course_id, content_id, index)
+
+    @server.tool()
     async def list_announcements(course_id: str) -> list[dict]:
         """List course announcements with full title/body text and publish date."""
         return await client.list_announcements(course_id)
