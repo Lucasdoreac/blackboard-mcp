@@ -765,6 +765,29 @@ class BlackboardClient:
 
         return public_view(await self._assessment_detail(course_id, content_id))
 
+    async def list_answered_assessments(self, course_id: str) -> list[dict[str, Any]]:
+        """Toda avaliação JÁ respondida do curso: questões, resposta dada e
+        gabarito quando o professor liberou (ver `attempt_review.py`). Só GET;
+        tentativa em andamento e trabalho sem questões ficam de fora."""
+        from .attempt_review import attempt_ids_from_grade, parse_reviewed_attempt
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        me = (await self._rest_get("/learn/api/v1/users/me"))["id"]
+        grades = await self._rest_get(f"/learn/api/v1/courses/{course_id}/gradebook/grades", {"userId": me})
+        results: list[dict[str, Any]] = []
+        for grade in grades.get("results", []) if isinstance(grades, dict) else []:
+            column_id = str(grade.get("columnId") or "")
+            for attempt_id in attempt_ids_from_grade(grade):
+                attempt = await self._rest_get(
+                    f"/learn/api/v1/courses/{course_id}/gradebook/attempts/{attempt_id}",
+                    {"columnId": column_id, "expand": "toolAttemptDetail"},
+                )
+                review = parse_reviewed_attempt(attempt, self.settings.base_url)
+                if review is not None:
+                    results.append({"course_id": course_id, "column_id": column_id, **review})
+        return results
+
     async def list_course_activities(self, course_id: str) -> list[dict[str, Any]]:
         """`get_assessment` de TODA atividade do curso (inclusive sem prazo e
         vencida) — base para levar a seção de atividades ao caderno."""
