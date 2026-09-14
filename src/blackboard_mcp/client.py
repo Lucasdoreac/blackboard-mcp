@@ -704,6 +704,88 @@ class BlackboardClient:
 
         return extract_assessments(course_id, await self.list_course_tree(course_id))
 
+    _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+
+    async def _assessment_detail(self, course_id: str, content_id: str) -> dict[str, Any]:
+        from .assessment_detail import parse_assessment_detail
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not content_id.startswith("_") or not content_id.endswith("_1"):
+            raise ValueError("content_id invalido")
+        item = await self._rest_get(f"/learn/api/v1/courses/{course_id}/contents/{content_id}")
+        return parse_assessment_detail(course_id, content_id, item, self.settings.base_url)
+
+    async def get_assessment(self, course_id: str, content_id: str) -> dict[str, Any]:
+        """Enunciado, prazo, tentativas e anexos de UMA atividade — só GET.
+        Nunca abre tentativa: questões de um `Test` só existem dentro dela."""
+        from .assessment_detail import public_view
+
+        return public_view(await self._assessment_detail(course_id, content_id))
+
+    async def list_course_activities(self, course_id: str) -> list[dict[str, Any]]:
+        """`get_assessment` de TODA atividade do curso (inclusive sem prazo e
+        vencida) — base para levar a seção de atividades ao caderno."""
+        from .assessment_detail import activity_ids, public_view
+
+        results = []
+        for content_id in activity_ids(await self.list_course_tree(course_id)):
+            results.append(public_view(await self._assessment_detail(course_id, content_id)))
+        return results
+
+    async def read_assessment_attachment(self, course_id: str, content_id: str, index: int) -> dict[str, Any]:
+        """Bytes de UM anexo de imagem do enunciado (print de código), base64.
+
+        Mesmo host + rota `/bbcswebdav/` provados antes do GET (o cookie nunca
+        sai do Blackboard); só imagem, provada por magic byte; teto de 5 MiB."""
+        import base64
+        import hashlib
+
+        from .assessment_detail import is_blackboard_redirect_hop, is_same_host_file_route, sniff_image
+
+        detail = await self._assessment_detail(course_id, content_id)
+        match = next((a for a in detail["attachments"] if a["index"] == index), None)
+        if match is None:
+            raise ValueError("anexo inexistente nesta atividade")
+        url = match["_url"]
+        if not is_same_host_file_route(url, self.settings.base_url):
+            raise ValueError("anexo nao aponta para o proprio Blackboard; nao baixado")
+        # Cadeia medida ao vivo (2026-09-14): host da instituição (com cookie)
+        # → 302 `alt-<id>.blackboard.com/bbcswebdav/...?hash=` → 302 para si
+        # mesmo → 200 PNG. Os saltos são seguidos à mão: o cookie de sessão só
+        # vai no PRIMEIRO (jar sem domínio do httpx iria para todo host), e cada
+        # salto seguinte precisa continuar em host do próprio Blackboard.
+        async with httpx.AsyncClient(cookies=self._session._cookies, follow_redirects=False, timeout=30.0) as hc:
+            response = await hc.get(url)
+        async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as hop_client:
+            for _hop in range(5):
+                if response.status_code not in (301, 302, 303, 307, 308):
+                    break
+                url = urljoin(url, response.headers.get("location", ""))
+                if not is_blackboard_redirect_hop(url, self.settings.base_url):
+                    raise ValueError("anexo redirecionou para fora do Blackboard (sessao expirada?)")
+                response = await hop_client.get(url)
+            else:
+                raise ValueError("anexo redirecionou demais")
+        if response.status_code >= 400:
+            raise ValueError("Blackboard recusou o anexo")
+        payload = response.content
+        if len(payload) > self._MAX_ATTACHMENT_BYTES:
+            raise ValueError("anexo excede o limite de 5 MiB")
+        mime = sniff_image(payload)
+        if mime is None:
+            raise ValueError("anexo nao e imagem (png/jpeg/gif/webp)")
+        return {
+            "course_id": course_id,
+            "content_id": content_id,
+            "index": index,
+            "file_name": match["file_name"],
+            "mime_type": mime,
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "data_b64": base64.b64encode(payload).decode("ascii"),
+        }
+
     async def list_announcements(self, course_id: str) -> list[dict[str, str]]:
         """Full-text course announcements (title, body, published date) via
         the same internal REST API — the professor's actual text, not a
