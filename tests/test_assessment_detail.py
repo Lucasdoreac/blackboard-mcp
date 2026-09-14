@@ -162,3 +162,17 @@ async def test_redirect_off_blackboard_hosts_is_refused(tmp_path: Path, monkeypa
     client = _client(tmp_path, monkeypatch, RAW, handler)
     with pytest.raises(ValueError, match="redirecionou para fora"):
         await client.read_assessment_attachment("_9_1", "_8_1", 1)
+
+
+def test_activity_ids_select_by_type_including_undated_items() -> None:
+    """`list_assessments` só vê item com `due_at`; a seção de atividades do
+    caderno precisa de TODAS — inclusive a sem prazo."""
+    from blackboard_mcp.assessment_detail import activity_ids
+
+    rows = [
+        {"id": "_1_1", "content_handler": "resource/x-bb-asmt-test-link", "due_at": None},
+        {"id": "_2_1", "content_handler": "resource/x-bb-asmt-test-link", "due_at": "2026-09-20T02:59:00.000Z"},
+        {"id": "_3_1", "content_handler": "resource/x-bb-document", "due_at": "2026-09-20T02:59:00.000Z"},
+        {"id": "_4_1", "content_handler": "resource/x-bb-folder", "due_at": None},
+    ]
+    assert activity_ids(rows) == ["_1_1", "_2_1"]

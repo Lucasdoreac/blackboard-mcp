@@ -133,6 +133,12 @@ def parse_assessment_detail(
     }
 
 
+def activity_ids(tree_rows: list[dict[str, Any]]) -> list[str]:
+    """Toda atividade da árvore pelo TIPO, com ou sem prazo — `extract_assessments`
+    filtra por `due_at` e perde atividade sem data."""
+    return [str(row["id"]) for row in tree_rows if row.get("content_handler") == ASSESSMENT_HANDLER and row.get("id")]
+
+
 def public_view(detail: dict[str, Any]) -> dict[str, Any]:
     """O que sai pela tool: sem a URL interna dos anexos."""
     return {
@@ -160,6 +166,6 @@ def sniff_image(payload: bytes) -> str | None:
 
 
 __all__ = [
-    "ASSESSMENT_HANDLER", "extract_instructions", "is_blackboard_redirect_hop", "is_same_host_file_route",
+    "ASSESSMENT_HANDLER", "activity_ids", "extract_instructions", "is_blackboard_redirect_hop", "is_same_host_file_route",
     "parse_assessment_detail", "public_view", "sniff_image",
 ]

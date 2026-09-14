@@ -723,6 +723,16 @@ class BlackboardClient:
 
         return public_view(await self._assessment_detail(course_id, content_id))
 
+    async def list_course_activities(self, course_id: str) -> list[dict[str, Any]]:
+        """`get_assessment` de TODA atividade do curso (inclusive sem prazo e
+        vencida) — base para levar a seção de atividades ao caderno."""
+        from .assessment_detail import activity_ids, public_view
+
+        results = []
+        for content_id in activity_ids(await self.list_course_tree(course_id)):
+            results.append(public_view(await self._assessment_detail(course_id, content_id)))
+        return results
+
     async def read_assessment_attachment(self, course_id: str, content_id: str, index: int) -> dict[str, Any]:
         """Bytes de UM anexo de imagem do enunciado (print de código), base64.
 
