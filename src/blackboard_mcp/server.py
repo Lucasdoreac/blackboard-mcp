@@ -105,6 +105,12 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_course_activities(course_id)
 
     @server.tool()
+    async def read_open_attempt(course_id: str, content_id: str) -> dict:
+        """Questions and options of the attempt ALREADY in progress for an
+        assessment. Read-only: never starts an attempt (open=false if none)."""
+        return await client.read_open_attempt(course_id, content_id)
+
+    @server.tool()
     async def list_answered_assessments(course_id: str) -> list[dict]:
         """Every already-answered assessment attempt of a course: questions,
         options, the given answer and the answer key when the instructor

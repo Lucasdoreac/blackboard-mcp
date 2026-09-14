@@ -765,6 +765,42 @@ class BlackboardClient:
 
         return public_view(await self._assessment_detail(course_id, content_id))
 
+    async def read_open_attempt(self, course_id: str, content_id: str) -> dict[str, Any]:
+        """Questões e alternativas da tentativa JÁ ABERTA (`IN_PROGRESS`) de uma
+        avaliação — só GET. Nunca cria tentativa: sem tentativa aberta devolve
+        `open: False`. Reler a tentativa por aqui não recarrega a página, que é
+        o que arrisca sortear questões novas (relato do dono, 2026-09-14)."""
+        from .attempt_review import OPEN_STATUSES, parse_attempt_questions
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not content_id.startswith("_") or not content_id.endswith("_1"):
+            raise ValueError("content_id invalido")
+        item = await self._rest_get(f"/learn/api/v1/courses/{course_id}/contents/{content_id}")
+        test = ((item.get("contentDetail") or {}).get("resource/x-bb-asmt-test-link") or {}).get("test") or {}
+        column_id = str((test.get("gradingColumn") or {}).get("id") or "")
+        base = {"course_id": course_id, "content_id": content_id, "column_id": column_id,
+                "title": str(item.get("title") or ""), "open": False}
+        if not column_id:
+            return base
+        me = (await self._rest_get("/learn/api/v1/users/me"))["id"]
+        listing = await self._rest_get(
+            f"/learn/api/v1/courses/{course_id}/gradebook/columns/{column_id}/attempts",
+            {"userId": me, "fields": "id,status,attemptDate"},
+        )
+        lookup = (listing.get("lookup") or {}) if isinstance(listing, dict) else {}
+        open_ids = [a["id"] for rows in lookup.values() for a in rows if a.get("status") in OPEN_STATUSES and a.get("id")]
+        if not open_ids:
+            return base
+        attempt = await self._rest_get(
+            f"/learn/api/v1/courses/{course_id}/gradebook/attempts/{open_ids[0]}",
+            {"columnId": column_id, "expand": "toolAttemptDetail"},
+        )
+        parsed = parse_attempt_questions(attempt, self.settings.base_url, statuses=OPEN_STATUSES)
+        if parsed is None:
+            return base
+        return {**base, **parsed, "title": base["title"] or parsed["title"], "open": True}
+
     async def list_answered_assessments(self, course_id: str) -> list[dict[str, Any]]:
         """Toda avaliação JÁ respondida do curso: questões, resposta dada e
         gabarito quando o professor liberou (ver `attempt_review.py`). Só GET;

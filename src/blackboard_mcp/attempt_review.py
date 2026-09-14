@@ -37,10 +37,22 @@ def _option_rows(question: dict[str, Any], given: Any, visible: bool, base_url: 
     return rows
 
 
+OPEN_STATUSES = frozenset({"IN_PROGRESS"})
+
+
 def parse_reviewed_attempt(attempt: dict[str, Any], base_url: str) -> dict[str, Any] | None:
     """Tentativa respondida → questões com resposta e gabarito; None se não é
     avaliação respondida (em andamento, trabalho sem questões, outro tipo)."""
-    if str(attempt.get("status") or "") not in ANSWERED_STATUSES:
+    return parse_attempt_questions(attempt, base_url, statuses=ANSWERED_STATUSES)
+
+
+def parse_attempt_questions(
+    attempt: dict[str, Any], base_url: str, *, statuses: frozenset[str]
+) -> dict[str, Any] | None:
+    """Questões de uma tentativa no status pedido (respondida ou em andamento).
+    Em andamento o Blackboard não manda `correctAnswer`, então `correct` fica
+    `None` por construção — nunca um gabarito inventado."""
+    if str(attempt.get("status") or "") not in statuses:
         return None
     detail = (attempt.get("toolAttemptDetail") or {}).get("resource/x-bb-assessment") or {}
     question_attempts = detail.get("questionAttempts") or []
@@ -89,4 +101,4 @@ def attempt_ids_from_grade(grade: dict[str, Any]) -> list[str]:
     return seen
 
 
-__all__ = ["ANSWERED_STATUSES", "attempt_ids_from_grade", "parse_reviewed_attempt"]
+__all__ = ["ANSWERED_STATUSES", "OPEN_STATUSES", "attempt_ids_from_grade", "parse_attempt_questions", "parse_reviewed_attempt"]

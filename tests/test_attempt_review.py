@@ -60,3 +60,18 @@ def test_in_progress_attempt_and_assignment_without_questions_are_not_answered_a
 
 def test_attempt_ids_from_grade_do_not_repeat() -> None:
     assert attempt_ids_from_grade({"firstAttemptId": "_1_1", "highestAttemptId": "_2_1", "lastAttemptId": "_2_1"}) == ["_1_1", "_2_1"]
+
+
+def test_open_attempt_questions_come_with_options_and_no_answer_key() -> None:
+    """Tentativa em andamento (formato da AS - Unidade I de Big Data): questões e
+    alternativas sim, gabarito nunca — mesmo com `isCorrectAnswersVisible`."""
+    from blackboard_mcp.attempt_review import OPEN_STATUSES, parse_attempt_questions
+
+    attempt = _attempt(status="IN_PROGRESS")
+    for option in attempt["toolAttemptDetail"]["resource/x-bb-assessment"]["questionAttempts"][0]["question"]["answers"]:
+        option.pop("correctAnswer")
+    parsed = parse_attempt_questions(attempt, BASE, statuses=OPEN_STATUSES)
+    q = parsed["questions"][0]
+    assert [o["letter"] for o in q["options"]] == ["A", "B", "C", "D", "E"]
+    assert {o["correct"] for o in q["options"]} == {None}
+    assert parse_attempt_questions(_attempt(status="COMPLETED"), BASE, statuses=OPEN_STATUSES) is None
