@@ -2,8 +2,9 @@
 
 Só quem conhece o `base_url` da instituição é a bridge, então o link nasce
 aqui. Formato da atividade medido na navegação real do dono (2026-09-14,
-AS - Unidade I: `/ultra/courses/<curso>/assessment/<content_id>/overview`).
-O de avisos ainda não foi visto numa captura.
+AS - Unidade I: `/ultra/courses/<curso>/assessment/<content_id>/overview`);
+o de avisos, no link "Avisos" da própria disciplina que o dono mandou
+(2026-09-15: `/ultra/courses/_1169578_1/announcements`).
 """
 
 from __future__ import annotations
