@@ -24,14 +24,13 @@ def test_profile_is_owner_only(tmp_path: Path) -> None:
     assert profile.stat().st_mode & 0o077 == 0
 
 
-def test_login_url_defaults_to_the_pilot_institution_when_nothing_is_configured(
+def test_login_url_requires_setup_when_nothing_is_configured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A profile with no `setup` run yet (e.g. the owner's own `sober`
-    profile today) must keep working exactly as before — no migration
-    required for the existing, already-authenticated deployment."""
+    """A public install must not silently target the maintainer's university."""
     monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
-    assert BlackboardClient(Settings.from_profile("sober")).login_url().startswith(DEFAULT_BASE_URL + "/")
+    with pytest.raises(ValueError, match="blackboard-mcp setup"):
+        BlackboardClient(Settings.from_profile("sober")).login_url()
 
 
 def test_login_url_accepts_any_institution_configured_via_setup(
@@ -55,9 +54,10 @@ def test_login_url_still_rejects_a_malformed_base_url(tmp_path: Path, monkeypatc
 
 def test_login_page_is_not_an_authenticated_blackboard_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
+    save_profile_config(tmp_path, "sober", {"base_url": "https://bb.example.edu"})
     client = BlackboardClient(Settings.from_profile("sober"))
     with pytest.raises(Exception):
-        client._require_base_url(f"{DEFAULT_BASE_URL}/?new_loc=%2Fultra%2Fcourse")
+        client._require_base_url("https://bb.example.edu/?new_loc=%2Fultra%2Fcourse")
 
 
 def test_save_and_load_profile_config_round_trips(tmp_path: Path) -> None:

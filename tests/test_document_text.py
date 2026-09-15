@@ -34,3 +34,12 @@ def test_colapsa_espaco_e_linhas_em_branco() -> None:
     txt = clean_document_body("Linha um.\n\n\n\n\nLinha dois com   espaços." + " palavra" * 40, None)
     assert txt is not None
     assert "\n\n\n" not in txt and "   " not in txt
+
+
+def test_rawtext_that_is_html_is_stripped_like_the_display_html() -> None:
+    """Editor novo do Ultra: `rawText` em HTML. Antes ia cru para o NotebookLM."""
+    prose = "Nesta aula vamos estudar autômatos finitos determinísticos e sua equivalência com expressões regulares. " * 3
+    raw = f'<div data-layout-row="dc5c"><div data-layout-column="5a8a"><p>Unidade 2 &amp; revisão</p><p>{prose}</p></div></div>'
+    text = clean_document_body(raw, None)
+    assert text is not None and "<" not in text and "data-layout" not in text
+    assert text.startswith("Unidade 2 & revisão\n")

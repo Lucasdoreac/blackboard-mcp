@@ -1,5 +1,16 @@
 # Decisões de produto
 
+## 2026-09-15 — Produto público não tem instituição nem perfil do mantenedor
+
+O MCP não traz URL de Blackboard, credenciais ou perfil pré-configurados. O
+perfil padrão agora é `default`; `blackboard-mcp setup` escolhe a instituição
+e grava a configuração localmente. Uma automação pode usar
+`BLACKBOARD_BASE_URL`, que tem precedência sobre a configuração salva.
+
+O perfil chamado `sober` e a ponte para Sober continuam suportados apenas como
+integração opcional, documentada em `docs/SOBER.md`. Eles não fazem parte do
+caminho de instalação de quem usa o MCP diretamente.
+
 ## 2026-09-02 — Setup guiado, sem editar código, pra qualquer instituição
 
 O `README.md` já registrava "o host Blackboard é fixo... neste piloto" como
@@ -10,15 +21,13 @@ caminho de configuração pra isso virar realidade sem editar código.
 Decisão: `base_url` deixa de ser hardcoded (`login_url()` validava contra
 uma string fixa) e passa a resolver em 3 camadas — env var (scripting/CI) →
 config persistida por perfil (`~/.local/share/blackboard-mcp/profiles/
-<perfil>/config.json`, escrita por `blackboard-mcp setup`) → o host do
-piloto original como último fallback, garantindo que um perfil já em uso
-(como o `sober` do dono) nunca precisa de migração. Novo comando `setup`
+<perfil>/config.json`, escrita por `blackboard-mcp setup`). Novo comando `setup`
 interativo é o único ponto de entrada esperado pra alguém de outra
 instituição: pergunta a URL do Blackboard e um nome de perfil, salva,
 abre o Chrome de login e confirma sozinho — zero arquivo pra editar na mão.
 
 Escopo deliberadamente NÃO incluído aqui: setup guiado da ponte systemd
-pro SOBER. Isso só importa pra quem quer a integração estilo WhatsApp; o
+pro Sober. Isso só importa pra quem quer a integração estilo WhatsApp; o
 público que esta mudança mira (alguém de outra faculdade usando
 `blackboard-mcp serve` direto no Claude Desktop/Codex) não precisa dela.
 

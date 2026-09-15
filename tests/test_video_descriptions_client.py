@@ -18,8 +18,13 @@ from blackboard_mcp.client import BlackboardClient
 from blackboard_mcp.config import Settings
 
 
+BASE_HOST = "blackboard.example.edu"
+
+
 def _client(tmp_path: Path) -> BlackboardClient:
-    client = BlackboardClient(Settings(profile="sober", data_home=tmp_path))
+    client = BlackboardClient(
+        Settings(profile="test", base_url=f"https://{BASE_HOST}", data_home=tmp_path)
+    )
     client._session._cookies = {"BbRouter": "expires:1,timeout:28800,xsrf:tok"}
     return client
 
@@ -70,8 +75,7 @@ async def test_follows_a_same_host_embed_when_the_body_itself_has_no_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = _client(tmp_path)
-    base_host = "bb.cruzeirodosulvirtual.com.br"
-    embed_url = f"https://{base_host}/bbcswebdav/xid-1_1"
+    embed_url = f"https://{BASE_HOST}/bbcswebdav/xid-1_1"
     monkeypatch.setattr(client, "list_course_tree", AsyncMock(return_value=[_DOC_ROW]))
     monkeypatch.setattr(client, "_rest_get", AsyncMock(return_value={
         "body": {"rawText": f'<a data-bbtype="embedded-unsafe-html" href="{embed_url}"></a>'}
