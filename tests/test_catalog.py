@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from blackboard_mcp.catalog import bind_notebook, load_courses, register_course
+import json
+
+from blackboard_mcp.catalog import load_courses, register_course
 
 
 def test_registered_course_survives_card_unavailability(tmp_path: Path) -> None:
@@ -12,12 +14,17 @@ def test_registered_course_survives_card_unavailability(tmp_path: Path) -> None:
     assert (tmp_path / "catalog" / "courses.json").stat().st_mode & 0o077 == 0
 
 
-def test_notebook_binding_requires_registered_course_and_uuid(tmp_path: Path) -> None:
+def test_legacy_notebook_binding_is_not_exposed(tmp_path: Path) -> None:
+    """O vínculo curso→caderno é da SOBER (registro único); um catálogo antigo
+    com `notebook_id` gravado não pode mais vazá-lo como se fosse fonte de verdade."""
     register_course(tmp_path, course_id="_1169577_1", title="Linguagens Formais e Autômatos")
-    bound = bind_notebook(tmp_path, course_id="_1169577_1", notebook_id="c71c5106-eac1-468b-83e5-d872ecd85d80")
-    assert bound["notebook_id"] == "c71c5106-eac1-468b-83e5-d872ecd85d80"
-    with pytest.raises(ValueError, match="disciplina nao registrada"):
-        bind_notebook(tmp_path, course_id="_999_1", notebook_id="c71c5106-eac1-468b-83e5-d872ecd85d80")
+    path = tmp_path / "catalog" / "courses.json"
+    rows = json.loads(path.read_text())
+    rows[0]["notebook_id"] = "c71c5106-eac1-468b-83e5-d872ecd85d80"
+    path.write_text(json.dumps(rows))
+    course = load_courses(tmp_path)[0]
+    assert "notebook_id" not in course
+    assert course["id"] == "_1169577_1"
 
 
 @pytest.mark.parametrize("course_id,title", [("not-a-course", "LFA"), ("_1_1", " ")])

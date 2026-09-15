@@ -1253,9 +1253,6 @@ class BlackboardClient:
         from .catalog import load_courses
         return load_courses(self.settings.data_home)
 
-    def bind_notebook(self, course_id: str, notebook_id: str) -> dict[str, str]:
-        from .catalog import bind_notebook
-        return bind_notebook(self.settings.data_home, course_id=course_id, notebook_id=notebook_id)
 
     async def sync_registered_courses(self) -> list[dict[str, Any]]:
         return [

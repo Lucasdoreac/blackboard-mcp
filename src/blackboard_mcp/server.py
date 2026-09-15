@@ -38,11 +38,6 @@ def create_server(profile: str) -> FastMCP:
         return client.list_registered_courses()
 
     @server.tool()
-    async def bind_notebook(course_id: str, notebook_id: str) -> dict:
-        """Bind a registered Blackboard course to an owner-confirmed NotebookLM notebook."""
-        return client.bind_notebook(course_id, notebook_id)
-
-    @server.tool()
     async def sync_registered_courses() -> list[dict]:
         """Synchronize owner-registered courses only; no material is downloaded."""
         return await client.sync_registered_courses()
