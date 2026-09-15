@@ -260,7 +260,10 @@ class BlackboardClient:
         """
         parsed = urlparse(self.settings.base_url)
         if parsed.scheme != "https" or not parsed.netloc:
-            raise ValueError("BLACKBOARD_BASE_URL invalido: use https://<host-do-blackboard>")
+            raise ValueError(
+                "Blackboard nao configurado: rode `blackboard-mcp setup` ou defina "
+                "BLACKBOARD_BASE_URL=https://<host-do-blackboard>"
+            )
         return f"{self.settings.base_url}/ultra/course"
 
     def open_login_window(self) -> dict[str, str | bool]:

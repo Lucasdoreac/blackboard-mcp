@@ -16,8 +16,13 @@ from blackboard_mcp.client import BlackboardClient
 from blackboard_mcp.config import Settings
 
 
+BASE_HOST = "blackboard.example.edu"
+
+
 def _client(tmp_path: Path) -> BlackboardClient:
-    return BlackboardClient(Settings(profile="sober", data_home=tmp_path))
+    return BlackboardClient(
+        Settings(profile="test", base_url=f"https://{BASE_HOST}", data_home=tmp_path)
+    )
 
 
 def _mock_transport(monkeypatch: pytest.MonkeyPatch, handler) -> None:
@@ -36,7 +41,7 @@ EXTERNALLINK_ITEM = {
     "title": "Arquivo em PDF - Unidade I",
     "contentHandler": "resource/x-bb-externallink",
     "contentDetail": {
-        "resource/x-bb-externallink": {"url": "https://bb.cruzeirodosulvirtual.com.br/bbcswebdav/xid-1_1"},
+        "resource/x-bb-externallink": {"url": f"https://{BASE_HOST}/bbcswebdav/xid-1_1"},
     },
 }
 
@@ -137,9 +142,6 @@ async def test_download_content_keeps_playwright_path_for_regular_files(
 # sessão REST seguia viva pelo keep-alive, mas TODO PDF de aula falhava porque
 # o único caminho para `x-bb-file` era o Playwright).
 # ---------------------------------------------------------------------------
-BASE_HOST = "bb.cruzeirodosulvirtual.com.br"
-
-
 def _x_bb_file_item(permanent_url: str | None, *, mime: str = "application/pdf") -> dict:
     file_ref: dict = {"fileName": "Aula-05.pdf", "mimeType": mime, "fileSize": 109}
     if permanent_url is not None:

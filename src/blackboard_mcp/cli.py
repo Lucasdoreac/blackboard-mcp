@@ -4,12 +4,33 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .client import BlackboardClient
 from .config import Settings, save_profile_config
 from .server import create_server
+from .session import session_path
+
+
+def doctor_report(profile: str) -> dict[str, object]:
+    """Return local setup facts without opening Chrome or reading cookies.
+
+    This is deliberately a *local* diagnostic: it never calls Blackboard,
+    prints no credential material, and is safe to run in issue reports.
+    """
+    settings = Settings.from_profile(profile)
+    config_path = settings.profile_dir / "config.json"
+    return {
+        "profile": settings.profile,
+        "base_url_configured": bool(settings.base_url),
+        "chrome": {"path": settings.chrome_path, "found": Path(settings.chrome_path).is_file()},
+        "profile_config": {"path": str(config_path), "found": config_path.is_file()},
+        "saved_session": {"path": str(session_path(settings.data_home, settings.profile)), "found": session_path(settings.data_home, settings.profile).is_file()},
+        "python": sys.version.split()[0],
+        "next_step": "login" if not session_path(settings.data_home, settings.profile).is_file() else "auth-status",
+    }
 
 
 def _prompt_base_url() -> str:
@@ -70,8 +91,8 @@ def _run_setup(profile_hint: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackboard-mcp")
-    parser.add_argument("command", choices=("setup", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
-    parser.add_argument("--profile", default="sober")
+    parser.add_argument("command", choices=("setup", "doctor", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
+    parser.add_argument("--profile", default="default")
     parser.add_argument("--course-id")
     parser.add_argument("--content-id")
     parser.add_argument("--title")
@@ -89,6 +110,9 @@ def main() -> None:
     if args.command == "login":
         if not _run_login(args.profile):
             raise SystemExit(1)
+        return
+    if args.command == "doctor":
+        print(json.dumps(doctor_report(args.profile), ensure_ascii=False, indent=2))
         return
     if args.command == "serve":
         create_server(args.profile).run()

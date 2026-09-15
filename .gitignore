@@ -1,6 +1,13 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.DS_Store
+.env
+.env.*
 
 # Authentication lives outside this repository, by design.
 profiles/

@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BASE_URL = "https://bb.cruzeirodosulvirtual.com.br"
+# A public tool must never silently point a new user's authenticated browser at
+# the maintainer's institution.  `setup` (or BLACKBOARD_BASE_URL for automation)
+# is the only way to choose an institution. Existing configured profiles keep
+# their persisted value unchanged.
+DEFAULT_BASE_URL = ""
+_DIRECT_SETTINGS_TEST_URL = "https://blackboard.example.invalid"
 _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -76,7 +81,9 @@ def resolve_chrome_path() -> str:
 @dataclass(frozen=True)
 class Settings:
     profile: str
-    base_url: str = DEFAULT_BASE_URL
+    # Direct construction is useful for pure unit tests. Production code uses
+    # `from_profile`, which deliberately resolves to an empty URL until setup.
+    base_url: str = _DIRECT_SETTINGS_TEST_URL
     data_home: Path = Path.home() / ".local" / "share" / "blackboard-mcp"
     chrome_path: str = field(default_factory=resolve_chrome_path)
     debug_port: int = 9223
@@ -91,9 +98,8 @@ class Settings:
             raise ValueError("perfil invalido: use apenas letras, numeros, _ ou -")
         data_home = Path(os.getenv("BLACKBOARD_MCP_HOME", Path.home() / ".local" / "share" / "blackboard-mcp"))
         # Resolution order: env var (scripting/CI) > `blackboard-mcp setup`'s
-        # persisted per-profile config > the pilot's own institution, kept
-        # as the default so an existing profile with nothing configured
-        # (e.g. the owner's own `sober` profile) never changes behavior.
+        # persisted per-profile config. A missing value is diagnosed locally
+        # and rejected only when an operation needs to contact Blackboard.
         env_base_url = os.getenv("BLACKBOARD_BASE_URL")
         persisted = load_profile_config(data_home, profile)
         base_url = env_base_url or persisted.get("base_url") or DEFAULT_BASE_URL

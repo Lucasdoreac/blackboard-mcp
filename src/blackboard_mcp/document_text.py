@@ -17,6 +17,7 @@ import html
 import re
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_BLOCK_TAG_RE = re.compile(r"</?(?:p|div|br|li|h[1-6]|tr)\b[^>]*>", re.IGNORECASE)
 _WS_RE = re.compile(r"[ \t ]+")
 _BLANKS_RE = re.compile(r"\n\s*\n\s*\n+")
 # Ruído estrutural que o Ultra injeta em toda página, sem valor de conteúdo.
@@ -34,12 +35,17 @@ def clean_document_body(raw_text: str | None, display_html: str | None) -> str |
     if raw_text and raw_text.strip():
         text = raw_text
     elif display_html and display_html.strip():
-        text = _TAG_RE.sub(" ", display_html)
-        text = html.unescape(text)
+        text = display_html
     else:
         return None
-    if _NOISE_RE.search(text) and not _TAG_RE.search(text):
-        # rawText que veio só com lixo estrutural (sem prosa) — descarta.
+    if _TAG_RE.search(text):
+        # O `rawText` do editor novo do Ultra (bbml) também vem em HTML — achado
+        # na SOBER (2026-09-15): páginas subiram ao NotebookLM como
+        # `<div data-layout-row=…>`. Tag é sempre removida, venha de onde vier.
+        text = _BLOCK_TAG_RE.sub("\n", text)
+        text = html.unescape(_TAG_RE.sub(" ", text))
+    if _NOISE_RE.search(text):
+        # Texto que veio só com lixo estrutural (sem prosa) — descarta.
         stripped = _NOISE_RE.sub(" ", text)
         if len(_WS_RE.sub(" ", stripped).strip()) < _MIN_CHARS:
             return None

@@ -1,5 +1,7 @@
 # Blackboard MCP
 
+> Local, read-only access to Blackboard Ultra for any MCP-compatible client.
+
 Deixa um assistente de IA (Claude, Codex ou outro que fale MCP) **ler o seu
 Blackboard** — disciplinas, materiais, atividades, prazos e avisos — para
 você perguntar coisas como *"quais atividades vencem esta semana?"* ou
@@ -11,6 +13,8 @@ você perguntar coisas como *"quais atividades vencem esta semana?"* ou
   de verificação e cookies nunca são mostrados nem enviados a ninguém.
 - **Serve para qualquer faculdade com Blackboard Ultra** (o Blackboard "novo",
   com endereço que contém `/ultra/`).
+- **Sem telemetria.** Não há conta Blackboard MCP, servidor central nem envio
+  de cookies para o projeto.
 
 > **O que é MCP?** É o jeito padrão de ligar uma ferramenta a um assistente de
 > IA. Você instala o Blackboard MCP uma vez e avisa o assistente que ele existe
@@ -57,6 +61,10 @@ Se aparecer um número de versão, deu certo.
 git clone https://github.com/Lucasdoreac/blackboard-mcp.git ~/blackboard-mcp
 ```
 
+> **Distribuição:** hoje a instalação é pelo código-fonte. A publicação no
+> PyPI será adicionada quando houver uma primeira release estável; não execute
+> instaladores de terceiros com o mesmo nome.
+
 > No Mac, se aparecer uma janela pedindo para instalar as "ferramentas de linha
 > de comando", aceite, espere terminar e rode o comando de novo.
 
@@ -66,6 +74,10 @@ git clone https://github.com/Lucasdoreac/blackboard-mcp.git ~/blackboard-mcp
 cd ~/blackboard-mcp
 uv run blackboard-mcp setup
 ```
+
+O projeto não vem com uma faculdade pré-configurada: esse passo é obrigatório
+para cada perfil e impede que um usuário seja direcionado por engano à
+instituição de outra pessoa.
 
 Na primeira vez demora um pouco (está instalando as dependências). Depois ele
 pergunta duas coisas:
@@ -170,6 +182,13 @@ Pergunte ao assistente, por exemplo:
 | O assistente não mostra o Blackboard | Confira o caminho do `uv` e da pasta no arquivo de configuração e reinicie o assistente por completo. |
 | O login da faculdade bloqueia o navegador | Algumas instituições barram login por navegador controlado por programa; nesse caso não há como contornar por aqui. |
 
+Antes de abrir uma issue, rode este diagnóstico local (não abre Chrome, não
+chama o Blackboard e não imprime cookies):
+
+```bash
+uv run blackboard-mcp doctor --profile maria
+```
+
 ### Disciplina que não aparece
 
 Se você acessa a disciplina pelo navegador mas ela não vem na lista, registre-a
@@ -214,6 +233,16 @@ cd ~/blackboard-mcp && git pull
   Nada é escrito no Blackboard.
 - Os materiais baixados ficam no seu computador; o que o assistente faz com as
   respostas depende do assistente que você usa.
+- `serve` (stdio) é o modo recomendado para assistentes locais. `serve-http`
+  existe apenas para uma bridge local por socket Unix autenticado; ele não deve
+  ser exposto na rede.
+
+## Documentação
+
+- [Arquitetura](docs/ARCHITECTURE.md) — limites entre navegador, REST e MCP.
+- [Segurança](SECURITY.md) — escopo, sessões e relato de vulnerabilidades.
+- [Contribuição](CONTRIBUTING.md) — ambiente, testes e regras de compatibilidade.
+- [Integração opcional com Sober](docs/SOBER.md) — não é requisito do MCP.
 
 ## Para quem vai programar
 
