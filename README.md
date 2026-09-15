@@ -1,106 +1,226 @@
 # Blackboard MCP
 
-Servidor MCP local e somente leitura para Blackboard Ultra. Ele e um produto
-independente: Codex, Claude Desktop e SOBER podem ser clientes do mesmo
-servidor, mas a sessao nunca entra no repositorio do SOBER.
+Deixa um assistente de IA (Claude, Codex ou outro que fale MCP) **ler o seu
+Blackboard** — disciplinas, materiais, atividades, prazos e avisos — para
+você perguntar coisas como *"quais atividades vencem esta semana?"* ou
+*"resume o aviso novo de Cálculo"*.
 
-## Primeiro uso
+- **Só lê.** Nunca entrega atividade, nunca abre tentativa de prova, nunca
+  escreve nada no Blackboard.
+- **Roda no seu computador.** Seu login fica numa pasta só sua; senha, código
+  de verificação e cookies nunca são mostrados nem enviados a ninguém.
+- **Serve para qualquer faculdade com Blackboard Ultra** (o Blackboard "novo",
+  com endereço que contém `/ultra/`).
 
-Funciona com **qualquer instituicao que rode Blackboard Ultra**, nao so a do
-piloto original. Depois de instalar Python/uv (o unico passo tecnico), o
-resto e guiado:
+> **O que é MCP?** É o jeito padrão de ligar uma ferramenta a um assistente de
+> IA. Você instala o Blackboard MCP uma vez e avisa o assistente que ele existe
+> — daí em diante o assistente consulta o Blackboard sozinho quando precisa.
+
+---
+
+## Antes de começar
+
+Você precisa de:
+
+| O quê | Por quê |
+|---|---|
+| **macOS ou Linux** | O Windows ainda não é suportado. |
+| **Google Chrome** instalado | É por ele que você faz login no Blackboard. |
+| **Um assistente com MCP** | Claude Desktop, Claude Code, Codex… |
+| Uns **15 minutos** | Na primeira vez. |
+
+Todos os comandos abaixo são digitados no **Terminal** (no Mac: abra o
+*Spotlight* com `⌘ + espaço`, digite `Terminal` e aperte Enter). Copie uma
+linha por vez, cole no Terminal e aperte Enter.
+
+---
+
+## Passo 1 — Instalar o `uv`
+
+O `uv` baixa e prepara tudo o que o programa precisa (inclusive o Python).
 
 ```bash
-cd ~/dev/blackboard-mcp
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Feche o Terminal e abra de novo** para ele reconhecer o `uv`. Para conferir:
+
+```bash
+uv --version
+```
+
+Se aparecer um número de versão, deu certo.
+
+## Passo 2 — Baixar o Blackboard MCP
+
+```bash
+git clone https://github.com/Lucasdoreac/blackboard-mcp.git ~/blackboard-mcp
+```
+
+> No Mac, se aparecer uma janela pedindo para instalar as "ferramentas de linha
+> de comando", aceite, espere terminar e rode o comando de novo.
+
+## Passo 3 — Configurar e fazer login
+
+```bash
+cd ~/blackboard-mcp
 uv run blackboard-mcp setup
 ```
 
-O assistente pergunta a URL do Blackboard da sua instituicao e um nome pro
-seu perfil, salva essa configuracao localmente (nunca precisa editar `.env`
-nem codigo), abre um Chrome dedicado pra voce fazer login e MFA, e confirma
-sozinho quando o login terminar. O perfil fica em
-`~/.local/share/blackboard-mcp/profiles/<nome>`, com permissoes restritas.
-Senhas, codigos MFA, cookies e URLs assinadas nunca sao impressos, retornados
-por MCP ou versionados.
+Na primeira vez demora um pouco (está instalando as dependências). Depois ele
+pergunta duas coisas:
 
-Depois do `setup`, ou pra scripting/CI (sem prompt interativo), os comandos
-individuais continuam disponiveis:
+1. **O endereço do Blackboard da sua faculdade.** Abra o Blackboard no
+   navegador e copie só o começo do endereço — por exemplo
+   `https://bb.suafaculdade.edu.br`.
+2. **Um nome para o seu perfil.** Digite uma palavra simples, como o seu
+   primeiro nome (`maria`). **Anote:** você vai usar esse nome nos próximos
+   passos.
 
-```bash
-uv run blackboard-mcp login --profile <nome>          # so o login, sem os prompts
-uv run blackboard-mcp auth-status --profile <nome>
-uv run blackboard-mcp courses --profile <nome>
-```
+Em seguida abre uma janela do Chrome. **Faça login normalmente** (e o código de
+verificação, se a faculdade pedir). O Terminal percebe sozinho quando o login
+termina e mostra *"Login confirmado"*. Pode fechar essa janela do Chrome.
 
-Automacao/CI tambem pode pular o `setup` de vez e so exportar
-`BLACKBOARD_BASE_URL` (tem prioridade sobre a config salva pelo `setup`).
+## Passo 4 — Conferir
 
-Algumas disciplinas permanecem acessiveis mas o Ultra nao as exibe como
-cartoes abertos. Registre-as uma vez para que todo cliente MCP tenha o mesmo
-catalogo local:
+Troque `maria` pelo nome que você escolheu:
 
 ```bash
-uv run blackboard-mcp register-course --profile <nome> \
-  --course-id _1169577_1 --title "Linguagens Formais e Autômatos"
-uv run blackboard-mcp sync-registered --profile <nome>
+uv run blackboard-mcp courses --profile maria
 ```
 
-## MCP
+Deve aparecer a lista das suas disciplinas. Se apareceu, está tudo pronto do
+lado do Blackboard.
 
-No cliente MCP, execute:
+## Passo 5 — Ligar ao seu assistente
+
+Descubra o caminho completo do `uv` (vai ser usado abaixo):
+
+```bash
+which uv
+```
+
+Vai aparecer algo como `/Users/maria/.local/bin/uv`. Nos exemplos, troque:
+- `CAMINHO_DO_UV` pelo que o `which uv` mostrou;
+- `SEU_USUARIO` pelo seu usuário do computador (a parte depois de `/Users/` ou
+  `/home/` no caminho acima);
+- `maria` pelo nome do seu perfil.
+
+### Claude Desktop
+
+1. Abra o Claude Desktop → **Settings** → **Developer** → **Edit Config**.
+2. O arquivo `claude_desktop_config.json` abre. Deixe-o assim (se já houver
+   outros servidores em `mcpServers`, só acrescente o bloco `blackboard`):
 
 ```json
 {
-  "command": "uv",
-  "args": ["--directory", "/home/ludoc/dev/blackboard-mcp", "run", "blackboard-mcp", "serve", "--profile", "sober"]
+  "mcpServers": {
+    "blackboard": {
+      "command": "CAMINHO_DO_UV",
+      "args": [
+        "--directory", "/Users/SEU_USUARIO/blackboard-mcp",
+        "run", "blackboard-mcp", "serve", "--profile", "maria"
+      ]
+    }
+  }
 }
 ```
 
-Ferramentas: `auth_status`, `reauthenticate`, `list_courses`, `list_terms`,
-`register_course`, `list_registered_courses`,
-`sync_registered_courses`, `sync_available_courses`, `list_course_content`,
-`list_course_tree`, `sync_course`, `list_assessments`, `list_announcements`,
-`download_content`, `archive_declared_pdfs`, `list_downloads` e
-`read_download_chunk`. A arvore expande apenas modulos/pastas;
-nao abre materiais. Elas leem a interface Ultra autenticada, pois a API publica de
-desenvolvedor requer uma credencial institucional separada. Elas nao escrevem
-no Blackboard. `download_content` so baixa um item explicitamente solicitado,
-para `~/.local/share/blackboard-mcp/downloads/`, com permissao privada, hash e
-recibo. A URL assinada que Blackboard gera nunca sai do navegador nem entra no
-recibo. A ponte Blackboard -> NotebookLM continua sendo responsabilidade do
-cliente (SOBER, Codex ou Claude), nao deste servidor de leitura.
+No Linux, o caminho da pasta é `/home/SEU_USUARIO/blackboard-mcp`.
 
-`archive_declared_pdfs` e o equivalente CLI `archive-pdfs` baixam somente itens
-cujo titulo do inventario declara explicitamente um PDF. A operacao e
-idempotente: recibos cujo hash ainda confere sao pulados. Videoaulas, paginas,
-links externos e streaming ficam inventariados, mas nao sao abertos nem
-extraidos por essa ferramenta; cada formato precisa de uma integracao que
-respeite a forma oficial de acesso e qualquer DRM.
+3. Salve, **feche o Claude Desktop por completo e abra de novo**.
 
-## Bridge para SOBER
+> Por que o caminho completo do `uv`? Aplicativos abertos pelo Dock não
+> enxergam os programas que o Terminal enxerga; com `uv` sozinho, o Claude
+> Desktop não acha o programa.
 
-O container SOBER nao pode controlar o Chrome do host. A ponte prevista e MCP
-Streamable HTTP por socket Unix, nunca por uma porta exposta na rede:
+### Claude Code
 
-Instale a unidade de usuário a partir de
-`ops/systemd/blackboard-mcp-bridge.service.example` e crie o arquivo privado
-`~/.config/blackboard-mcp/bridge.env` a partir de `bridge.env.example`.
-Ela usa `%t/blackboard-mcp/bridge.sock` (normalmente
-`/run/user/<uid>/blackboard-mcp/bridge.sock`), sem expor porta TCP.
+Um comando no Terminal:
 
-O cliente no container envia a mesma chave no cabecalho
-`x-sober-bridge-key`; o socket e montado somente no `api`. Configure o
-diretório do socket em `BLACKBOARD_MCP_SOCKET_DIR` e a chave em
-`BLACKBOARD_MCP_BRIDGE_KEY` no `.env` privado do SOBER, além de
-`BLACKBOARD_MCP_ENABLED=true`.
+```bash
+claude mcp add blackboard -- uv --directory ~/blackboard-mcp run blackboard-mcp serve --profile maria
+```
 
-## Limites de seguranca
+### Outros assistentes (Codex etc.)
 
-- O perfil pertence ao usuario local; nao e compartilhado entre pessoas.
-- O host Blackboard e configuravel por perfil (`blackboard-mcp setup`, ou a
-  variavel `BLACKBOARD_BASE_URL`) — funciona com qualquer instituicao Ultra,
-  desde que ela nao bloqueie login por navegador automatizado.
-- A API e chamada dentro do contexto autenticado do navegador. Isso evita
-  copiar cookies para MCP, banco ou logs.
-- A resposta de ferramentas e sanitizada: nao devolve headers, cookies ou URL
-  de download temporaria.
+Todo cliente MCP pede as mesmas duas coisas: o **comando** (`CAMINHO_DO_UV`) e
+os **argumentos**
+(`--directory /Users/SEU_USUARIO/blackboard-mcp run blackboard-mcp serve --profile maria`).
+
+## Pronto — experimente
+
+Pergunte ao assistente, por exemplo:
+
+- *"Quais disciplinas eu tenho no Blackboard?"*
+- *"Que atividades têm prazo nos próximos dias?"*
+- *"Tem aviso novo em alguma disciplina?"*
+- *"O que pede o enunciado da atividade 3 de Estruturas de Dados?"*
+
+---
+
+## Quando algo dá errado
+
+| Aconteceu | O que fazer |
+|---|---|
+| `uv: command not found` | Feche e abra o Terminal de novo. Se continuar, repita o Passo 1. |
+| O assistente diz que precisa de login, ou a sessão expirou | A sessão do Blackboard vence de tempos em tempos. Rode `cd ~/blackboard-mcp && uv run blackboard-mcp login --profile maria` e faça login de novo. |
+| `courses` mostra a lista vazia ou falta disciplina | Algumas disciplinas não aparecem como cartão no Blackboard. Veja "Disciplina que não aparece" abaixo. |
+| O Chrome não abre | Confira se o **Google Chrome** está instalado. Se ele estiver num lugar diferente do normal, informe o caminho antes do comando: `export BLACKBOARD_CHROME_PATH="/caminho/do/chrome"`. |
+| O assistente não mostra o Blackboard | Confira o caminho do `uv` e da pasta no arquivo de configuração e reinicie o assistente por completo. |
+| O login da faculdade bloqueia o navegador | Algumas instituições barram login por navegador controlado por programa; nesse caso não há como contornar por aqui. |
+
+### Disciplina que não aparece
+
+Se você acessa a disciplina pelo navegador mas ela não vem na lista, registre-a
+uma vez. O código da disciplina está no endereço dela no Blackboard — a parte
+parecida com `_1169577_1`:
+
+```bash
+uv run blackboard-mcp register-course --profile maria --course-id _1169577_1 --title "Nome da disciplina"
+```
+
+### Atualizar para a versão mais nova
+
+```bash
+cd ~/blackboard-mcp && git pull
+```
+
+---
+
+## O que o assistente consegue fazer
+
+| Ferramenta | Para quê |
+|---|---|
+| `auth_status`, `reauthenticate` | Ver se o login vale e renovar a sessão |
+| `list_terms`, `list_courses` | Semestres e disciplinas |
+| `register_course`, `list_registered_courses`, `sync_registered_courses` | Disciplinas que o Blackboard esconde dos cartões |
+| `list_course_content`, `list_course_tree`, `sync_course`, `sync_available_courses` | Estrutura de pastas e materiais (sem abrir nada) |
+| `list_assessments`, `list_course_activities`, `get_assessment` | Atividades, prazos e enunciados — com o link para abrir no Blackboard |
+| `list_answered_assessments` | Questões de avaliações já respondidas, com gabarito quando o professor liberou |
+| `read_open_attempt` | Questões de uma tentativa que **você** já abriu (nunca abre uma) |
+| `read_assessment_attachment` | Imagens do enunciado |
+| `list_announcements` | Avisos dos professores — com o link |
+| `list_course_documents`, `list_video_descriptions`, `list_video_transcripts` | Texto das páginas, descrições e legendas das videoaulas |
+| `download_content`, `archive_declared_pdfs`, `list_downloads`, `read_download_chunk` | Baixar materiais pedidos para uma pasta privada no seu computador |
+
+## Privacidade e segurança
+
+- Tudo fica em `~/.local/share/blackboard-mcp/`, com permissão só para o seu
+  usuário. O perfil é pessoal — não compartilhe essa pasta.
+- Senha, código de verificação, cookies e links temporários de download nunca
+  aparecem na tela, nas respostas ao assistente nem em arquivos do projeto.
+- O acesso é feito pelo próprio navegador logado, como se fosse você navegando.
+  Nada é escrito no Blackboard.
+- Os materiais baixados ficam no seu computador; o que o assistente faz com as
+  respostas depende do assistente que você usa.
+
+## Para quem vai programar
+
+- Testes: `uv run --frozen pytest -q`
+- Comandos avulsos (sem perguntas interativas, bom para scripts): `login`,
+  `auth-status`, `courses`, `tree`, `assessments`, `sync`, `download`… — veja
+  `uv run blackboard-mcp --help`. `BLACKBOARD_BASE_URL` substitui o endereço
+  salvo pelo `setup`, e `BLACKBOARD_MCP_HOME` troca a pasta de dados.
+- Decisões de desenho: [`docs/DECISIONS.md`](docs/DECISIONS.md). Integração com
+  o SOBER: [`docs/SOBER.md`](docs/SOBER.md).
