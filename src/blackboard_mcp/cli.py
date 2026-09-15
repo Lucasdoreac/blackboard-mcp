@@ -70,12 +70,11 @@ def _run_setup(profile_hint: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackboard-mcp")
-    parser.add_argument("command", choices=("setup", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "bind-notebook", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
+    parser.add_argument("command", choices=("setup", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
     parser.add_argument("--profile", default="sober")
     parser.add_argument("--course-id")
     parser.add_argument("--content-id")
     parser.add_argument("--title")
-    parser.add_argument("--notebook-id")
     parser.add_argument("--term")
     parser.add_argument("--socket")
     parser.add_argument("--bridge-key-env", default="BLACKBOARD_BRIDGE_KEY")
@@ -120,10 +119,6 @@ def main() -> None:
             result = client.register_course(args.course_id, args.title)
         elif args.command == "registered-courses":
             result = client.list_registered_courses()
-        elif args.command == "bind-notebook":
-            if not args.course_id or not args.notebook_id:
-                raise ValueError("bind-notebook requer --course-id e --notebook-id")
-            result = client.bind_notebook(args.course_id, args.notebook_id)
         elif args.command == "sync-registered":
             result = asyncio.run(client.sync_registered_courses())
         elif args.command == "sync-all":
