@@ -743,8 +743,10 @@ class BlackboardClient:
 
     async def list_assessments(self, course_id: str) -> list[dict[str, str]]:
         from .assessments import extract_assessments
+        from .links import with_activity_url
 
-        return extract_assessments(course_id, await self.list_course_tree(course_id))
+        rows = extract_assessments(course_id, await self.list_course_tree(course_id))
+        return [with_activity_url(self.settings.base_url, row) for row in rows]
 
     _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
@@ -762,8 +764,9 @@ class BlackboardClient:
         """Enunciado, prazo, tentativas e anexos de UMA atividade — só GET.
         Nunca abre tentativa: questões de um `Test` só existem dentro dela."""
         from .assessment_detail import public_view
+        from .links import with_activity_url
 
-        return public_view(await self._assessment_detail(course_id, content_id))
+        return with_activity_url(self.settings.base_url, public_view(await self._assessment_detail(course_id, content_id)))
 
     async def read_open_attempt(self, course_id: str, content_id: str) -> dict[str, Any]:
         """Questões e alternativas da tentativa JÁ ABERTA (`IN_PROGRESS`) de uma
@@ -828,10 +831,12 @@ class BlackboardClient:
         """`get_assessment` de TODA atividade do curso (inclusive sem prazo e
         vencida) — base para levar a seção de atividades ao caderno."""
         from .assessment_detail import activity_ids, public_view
+        from .links import with_activity_url
 
         results = []
         for content_id in activity_ids(await self.list_course_tree(course_id)):
-            results.append(public_view(await self._assessment_detail(course_id, content_id)))
+            detail = public_view(await self._assessment_detail(course_id, content_id))
+            results.append(with_activity_url(self.settings.base_url, detail))
         return results
 
     async def read_assessment_attachment(self, course_id: str, content_id: str, index: int) -> dict[str, Any]:
@@ -899,7 +904,9 @@ class BlackboardClient:
         results = data.get("results", []) if isinstance(data, dict) else []
         if not isinstance(results, list):
             raise RuntimeError("os avisos do curso nao carregaram no formato esperado")
-        return extract_announcements(course_id, results)
+        from .links import with_announcements_url
+
+        return [with_announcements_url(self.settings.base_url, row) for row in extract_announcements(course_id, results)]
 
     async def list_video_descriptions(self, course_id: str) -> list[dict[str, str]]:
         """Accessibility descriptions ("#paratodosverem") already written by
