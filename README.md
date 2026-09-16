@@ -76,9 +76,9 @@ cd ~/blackboard-mcp
 uv run blackboard-mcp setup
 ```
 
-O projeto não vem com uma faculdade pré-configurada: esse passo é obrigatório
-para cada perfil e impede que um usuário seja direcionado por engano à
-instituição de outra pessoa.
+O projeto já vem apontado para a UDF; o `setup` grava a faculdade do SEU perfil
+e é o que impede alguém de ser direcionado por engano à instituição de outra
+pessoa. Rode-o mesmo sendo da UDF — é ele que faz o login.
 
 Na primeira vez demora um pouco (está instalando as dependências). Depois ele
 pergunta duas coisas:
