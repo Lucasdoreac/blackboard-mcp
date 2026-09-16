@@ -11,8 +11,9 @@ você perguntar coisas como *"quais atividades vencem esta semana?"* ou
   escreve nada no Blackboard.
 - **Roda no seu computador.** Seu login fica numa pasta só sua; senha, código
   de verificação e cookies nunca são mostrados nem enviados a ninguém.
-- **Serve para qualquer faculdade com Blackboard Ultra** (o Blackboard "novo",
-  com endereço que contém `/ultra/`).
+- **Nasceu para a UDF** (é o Blackboard que vem configurado por padrão) e
+  **serve qualquer faculdade com Blackboard Ultra** — o `setup` pergunta o
+  endereço da sua.
 - **Sem telemetria.** Não há conta Blackboard MCP, servidor central nem envio
   de cookies para o projeto.
 
@@ -75,16 +76,17 @@ cd ~/blackboard-mcp
 uv run blackboard-mcp setup
 ```
 
-O projeto não vem com uma faculdade pré-configurada: esse passo é obrigatório
-para cada perfil e impede que um usuário seja direcionado por engano à
-instituição de outra pessoa.
+O projeto já vem apontado para a UDF; o `setup` grava a faculdade do SEU perfil
+e é o que impede alguém de ser direcionado por engano à instituição de outra
+pessoa. Rode-o mesmo sendo da UDF — é ele que faz o login.
 
 Na primeira vez demora um pouco (está instalando as dependências). Depois ele
 pergunta duas coisas:
 
 1. **O endereço do Blackboard da sua faculdade.** Abra o Blackboard no
    navegador e copie só o começo do endereço — por exemplo
-   `https://bb.suafaculdade.edu.br`.
+   `https://bb.suafaculdade.edu.br`. Na UDF é
+   `https://bb.cruzeirodosulvirtual.com.br` (o padrão do projeto).
 2. **Um nome para o seu perfil.** Digite uma palavra simples, como o seu
    primeiro nome (`maria`). **Anote:** você vai usar esse nome nos próximos
    passos.
@@ -198,6 +200,14 @@ parecida com `_1169577_1`:
 ```bash
 uv run blackboard-mcp register-course --profile maria --course-id _1169577_1 --title "Nome da disciplina"
 ```
+
+### Sou de outra faculdade
+
+Nada a editar: o `setup` grava o endereço por perfil e
+`BLACKBOARD_BASE_URL` vence tudo (bom para scripts). Se você clonou o projeto
+para a sua instituição e quer que ele já venha configurado, troque só
+`DEFAULT_BASE_URL` em `src/blackboard_mcp/config.py` — é o único lugar do
+código que conhece a instituição.
 
 ### Atualizar para a versão mais nova
 
