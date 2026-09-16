@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 
-# A public tool must never silently point a new user's authenticated browser at
-# the maintainer's institution.  `setup` (or BLACKBOARD_BASE_URL for automation)
-# is the only way to choose an institution. Existing configured profiles keep
-# their persisted value unchanged.
-DEFAULT_BASE_URL = ""
+# Institução padrão deste repositório: a UDF (Blackboard hospedado no Cruzeiro
+# do Sul Virtual). Serve QUALQUER Blackboard Ultra: `blackboard-mcp setup`
+# pergunta o endereço e grava por perfil, e `BLACKBOARD_BASE_URL` vence tudo
+# (scripting/CI). Clonou para outra faculdade? Troque SÓ esta linha — nenhum
+# outro lugar do código conhece a instituição.
+DEFAULT_BASE_URL = "https://bb.cruzeirodosulvirtual.com.br"
 _DIRECT_SETTINGS_TEST_URL = "https://blackboard.example.invalid"
 _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 

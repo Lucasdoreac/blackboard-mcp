@@ -24,11 +24,23 @@ def test_profile_is_owner_only(tmp_path: Path) -> None:
     assert profile.stat().st_mode & 0o077 == 0
 
 
-def test_login_url_requires_setup_when_nothing_is_configured(
+def test_login_url_falls_back_to_the_repository_institution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A public install must not silently target the maintainer's university."""
+    """Sem configurar nada, vale a instituição do repositório (a UDF) —
+    decisão do dono (2026-09-15): "deixa como mcp da udf, que eu possa clonar
+    com outro default"."""
     monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
+    monkeypatch.delenv("BLACKBOARD_BASE_URL", raising=False)
+    assert BlackboardClient(Settings.from_profile("sober")).login_url() == f"{DEFAULT_BASE_URL}/ultra/course"
+
+
+def test_fork_that_clears_the_default_asks_for_setup_instead_of_guessing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
+    monkeypatch.delenv("BLACKBOARD_BASE_URL", raising=False)
+    monkeypatch.setattr("blackboard_mcp.config.DEFAULT_BASE_URL", "")
     with pytest.raises(ValueError, match="blackboard-mcp setup"):
         BlackboardClient(Settings.from_profile("sober")).login_url()
 
@@ -88,3 +100,19 @@ def test_from_profile_uses_persisted_config_when_no_env_var(tmp_path: Path, monk
     monkeypatch.delenv("BLACKBOARD_BASE_URL", raising=False)
     save_profile_config(tmp_path, "outra-faculdade", {"base_url": "https://learn.outrafaculdade.edu"})
     assert Settings.from_profile("outra-faculdade").base_url == "https://learn.outrafaculdade.edu"
+
+
+def test_default_institution_is_the_repository_one_and_setup_or_env_beats_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O padrão é a UDF (o dono do repo); quem é de outra faculdade não edita
+    código — `setup` grava por perfil e a variável de ambiente vence tudo."""
+    monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
+    monkeypatch.delenv("BLACKBOARD_BASE_URL", raising=False)
+    assert Settings.from_profile("novo").base_url == DEFAULT_BASE_URL.rstrip("/")
+
+    save_profile_config(tmp_path, "novo", {"base_url": "https://learn.outra.edu"})
+    assert Settings.from_profile("novo").base_url == "https://learn.outra.edu"
+
+    monkeypatch.setenv("BLACKBOARD_BASE_URL", "https://ci.exemplo.edu")
+    assert Settings.from_profile("novo").base_url == "https://ci.exemplo.edu"

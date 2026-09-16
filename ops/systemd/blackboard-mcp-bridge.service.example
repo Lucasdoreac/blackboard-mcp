@@ -1,13 +1,19 @@
+# Bridge MCP por socket Unix (nunca porta TCP). Instale como unidade de USUÁRIO:
+#   mkdir -p ~/.config/systemd/user
+#   cp ops/systemd/blackboard-mcp-bridge.service.example \
+#      ~/.config/systemd/user/blackboard-mcp-bridge.service
+# Ajuste WorkingDirectory/ExecStart se o repositório ou o `uv` não estiverem nos
+# caminhos abaixo (`%h` = home do usuário), e o perfil (`--profile`).
 [Unit]
-Description=Blackboard MCP bridge for SOBER (local Unix socket only)
+Description=Blackboard MCP bridge (local Unix socket only)
 After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/ludoc/dev/blackboard-mcp
+WorkingDirectory=%h/blackboard-mcp
 EnvironmentFile=%h/.config/blackboard-mcp/bridge.env
-Environment=PATH=/home/ludoc/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/ludoc/.local/bin/uv --directory /home/ludoc/dev/blackboard-mcp run blackboard-mcp serve-http --profile sober --socket %t/blackboard-mcp/bridge.sock
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv --directory %h/blackboard-mcp run blackboard-mcp serve-http --profile sober --socket %t/blackboard-mcp/bridge.sock
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
