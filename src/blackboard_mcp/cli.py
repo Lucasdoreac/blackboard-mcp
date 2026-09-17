@@ -91,12 +91,15 @@ def _run_setup(profile_hint: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackboard-mcp")
-    parser.add_argument("command", choices=("setup", "doctor", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "serve", "serve-http"))
+    parser.add_argument("command", choices=("setup", "doctor", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "capture-submission", "serve", "serve-http"))
     parser.add_argument("--profile", default="default")
     parser.add_argument("--course-id")
     parser.add_argument("--content-id")
     parser.add_argument("--title")
     parser.add_argument("--term")
+    parser.add_argument("--url", help="capture-submission: URL da atividade a abrir")
+    parser.add_argument("--out", help="capture-submission: arquivo .jsonl do registro")
+    parser.add_argument("--minutes", type=float, default=30.0)
     parser.add_argument("--socket")
     parser.add_argument("--bridge-key-env", default="BLACKBOARD_BRIDGE_KEY")
     return parser
@@ -113,6 +116,25 @@ def main() -> None:
         return
     if args.command == "doctor":
         print(json.dumps(doctor_report(args.profile), ensure_ascii=False, indent=2))
+        return
+    if args.command == "capture-submission":
+        # Aprende o contrato de ENVIO observando um envio manual. Não envia
+        # nada: o projeto é read-only, e descobrir endpoint de escrita por
+        # tentativa e erro contra conta acadêmica real pode queimar uma
+        # tentativa de alguém sem desfazer.
+        if not args.url:
+            raise SystemExit("capture-submission requer --url da atividade")
+        from pathlib import Path
+
+        from .client import BlackboardClient
+        from .config import Settings
+
+        destino = Path(args.out or f"captura-envio-{args.profile}.jsonl")
+        cliente = BlackboardClient(Settings.from_profile(args.profile))
+        print(json.dumps(
+            asyncio.run(cliente.capture_submission(args.url, destino, minutes=args.minutes)),
+            ensure_ascii=False,
+        ))
         return
     if args.command == "serve":
         create_server(args.profile).run()

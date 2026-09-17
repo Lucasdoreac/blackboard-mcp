@@ -771,6 +771,55 @@ class BlackboardClient:
 
         return with_activity_url(self.settings.base_url, public_view(await self._assessment_detail(course_id, content_id)))
 
+    async def capture_submission(self, url: str, out_path: Path, *, minutes: float = 30.0) -> dict[str, Any]:
+        """Abre a atividade numa janela VISÍVEL e registra as escritas do envio.
+
+        Não envia nada: só escuta. O dono envia à mão e o arquivo resultante é o
+        contrato medido do qual a implementação do envio será escrita — em vez
+        de adivinhar endpoint de escrita contra uma conta acadêmica real.
+        """
+        from .capture import record
+
+        linhas: list[dict[str, Any]] = []
+        playwright, context, attached = await self._context(headless=False)
+        page = await self._page(context)
+
+        async def ao_responder(response: Any) -> None:
+            pedido = response.request
+            try:
+                corpo = pedido.post_data
+            except Exception:  # noqa: BLE001 — corpo indisponível não invalida o registro
+                corpo = None
+            linha = record(
+                method=pedido.method, url=pedido.url, headers=dict(pedido.headers),
+                body=corpo, status=response.status, base_url=self.settings.base_url,
+            )
+            if linha is None:
+                return
+            linhas.append(linha)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with out_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+            print(f"[captura] {linha['method']} {linha['status']} {linha['url'][:110]}", flush=True)
+
+        page.on("response", lambda r: asyncio.ensure_future(ao_responder(r)))
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+            print(f"[captura] janela aberta. Envie a atividade normalmente.\n"
+                  f"[captura] gravando escritas em {out_path}\n"
+                  f"[captura] a janela fecha sozinha em {minutes:.0f} min, ou feche a aba ao terminar.",
+                  flush=True)
+            await page.wait_for_event("close", timeout=minutes * 60_000)
+        except Exception as exc:  # noqa: BLE001 — timeout/fechamento é fim normal
+            print(f"[captura] encerrando: {type(exc).__name__}", flush=True)
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
+            await self._close(playwright, context, attached=attached)
+        return {"captured": len(linhas), "path": str(out_path)}
+
     async def _gradebook_column_for(self, course_id: str, content_id: str) -> dict[str, Any] | None:
         """Coluna do diário que corresponde a um conteúdo.
 
