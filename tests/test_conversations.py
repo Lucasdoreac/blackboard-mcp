@@ -288,3 +288,56 @@ def test_message_body_escapes_what_the_model_wrote() -> None:
     for vazio in ("", "   ", "\n\n"):
         with pytest.raises(SubmissionError):
             message_body(vazio)
+
+
+# --- Contrato MEDIDO de abertura de conversa (2026-09-17) ---------------------
+# Estes testes fixam o que a captura registrou, requisição por requisição. O
+# valor deles é justamente não serem deduzidos: a versão anterior seguia a
+# simetria da API e errou 3 dos 4 campos do corpo.
+
+@pytest.mark.asyncio
+async def test_starting_a_conversation_sends_exactly_what_the_browser_sent(monkeypatch) -> None:
+    """Captura de 2026-09-17, conversa real com a professora:
+
+        POST /learn/api/v1/courses/_1169578_1/conversations
+             ?sendEmailToParticipants=true                            -> 201
+        {"participantIds":["_3853586_1"],
+         "messages":[{"body":{"rawText":"<p>…</p>","displayText":""}}],
+         "canBeRepliedTo":true}
+    """
+    from blackboard_mcp.submitting import MessageWriter
+
+    visto: dict = {}
+
+    async def _write(self, method, path, **kwargs):  # noqa: ANN001
+        visto.update({"method": method, "path": path, **kwargs})
+        return {"id": "_1_1"}
+
+    monkeypatch.setattr(MessageWriter, "_write", _write)
+    await MessageWriter(object()).start_conversation("_1169578_1", ["_3853586_1"], "Bom dia professora")
+
+    assert visto["method"] == "POST"
+    assert visto["path"] == "/learn/api/v1/courses/_1169578_1/conversations"
+    assert visto["params"] == {"sendEmailToParticipants": "true"}
+    corpo = visto["json"]
+    assert corpo["participantIds"] == ["_3853586_1"]
+    assert corpo["canBeRepliedTo"] is True
+    assert corpo["messages"][0]["body"] == {"rawText": "<p>Bom dia professora</p>", "displayText": ""}
+    assert "includesAllMembers" not in corpo, "campo que eu inventei e a requisição real não tem"
+
+
+@pytest.mark.asyncio
+async def test_not_notifying_is_a_choice_the_caller_makes(monkeypatch) -> None:
+    """Sem o parâmetro de e-mail a mensagem entra numa caixa que ninguém abre.
+    O default acompanha a interface; desligar é decisão explícita de quem chama."""
+    from blackboard_mcp.submitting import MessageWriter
+
+    visto: dict = {}
+
+    async def _write(self, method, path, **kwargs):  # noqa: ANN001
+        visto.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(MessageWriter, "_write", _write)
+    await MessageWriter(object()).start_conversation("_1_1", ["_2_1"], "oi", notify_by_email=False)
+    assert visto["params"] == {"sendEmailToParticipants": "false"}

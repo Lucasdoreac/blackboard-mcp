@@ -182,7 +182,8 @@ def message_body(texto: str) -> dict[str, str]:
     if len(limpo) > MAX_MESSAGE_CHARS:
         raise SubmissionError(f"mensagem longa demais ({len(limpo)} chars)")
     paragrafos = [_html.escape(p.strip()) for p in limpo.split("\n\n") if p.strip()]
-    return {"rawText": "".join(f"<p>{p}</p>" for p in paragrafos)}
+    # `displayText` vazio é o que a interface manda — medido, não suposto.
+    return {"rawText": "".join(f"<p>{p}</p>" for p in paragrafos), "displayText": ""}
 
 
 class MessageWriter(SubmissionWriter):
@@ -192,23 +193,52 @@ class MessageWriter(SubmissionWriter):
     retry — porque o motivo é o mesmo: repetir uma escrita pode duplicar, e
     mensagem duplicada na caixa de um professor não se desfaz.
 
-    Contrato de ESCRITA ainda NÃO medido contra a plataforma (2026-09-17). A
-    leitura foi: `permissions.create` é `true` e o corpo guardado é
-    `{"rawText": "<html>"}`. Os endpoints abaixo seguem a simetria do resto da
-    API interna e são a melhor hipótese disponível — quem chamar primeiro deve
-    conferir o resultado por `list_conversations`, nunca pela resposta."""
+    CONTRATO MEDIDO (2026-09-17), escutando o dono abrir uma conversa real com
+    a professora pela interface do Ultra:
+
+        POST /learn/api/v1/courses/{curso}/conversations
+             ?sendEmailToParticipants=true                             -> 201
+             {"participantIds": ["_3853586_1"],
+              "messages": [{"body": {"rawText": "<p>…</p>", "displayText": ""}}],
+              "canBeRepliedTo": true}
+
+    A rota era a hipótese certa; o CORPO estava errado em três dos quatro
+    campos. `includesAllMembers` foi invenção minha e não existe na requisição
+    real; `canBeRepliedTo` e `displayText` faltavam; e o parâmetro de e-mail,
+    que decide se o professor é NOTIFICADO, não estava em lugar nenhum — uma
+    mensagem sem ele pode ficar numa caixa que ninguém abre.
+
+    O `POST .../conversations/preview` que a interface faz antes
+    (`{"participantIds": [...], "messageLimit": 20}`) é da tela, não do envio:
+    carrega o histórico com aquela pessoa. Não é replicado aqui.
+
+    `reply` continua NÃO MEDIDO — a captura cobriu abrir conversa, não
+    responder numa existente. Está dito no método."""
 
     async def start_conversation(self, course_id: str, recipient_ids: list[str],
-                                 texto: str) -> dict[str, Any]:
+                                 texto: str, *, notify_by_email: bool = True) -> dict[str, Any]:
+        """Abre conversa com o(s) destinatário(s). Corpo conforme medido.
+
+        `notify_by_email` acompanha o que a interface faz: sem ele a mensagem
+        entra na caixa do Blackboard sem avisar ninguém, e uma mensagem que o
+        professor não vê é o mesmo que não ter mandado."""
         if not recipient_ids:
             raise SubmissionError("sem destinatario — nao mando mensagem para ninguem")
         return await self._write(
             "POST", f"/learn/api/v1/courses/{course_id}/conversations",
-            json={"participantIds": list(recipient_ids), "includesAllMembers": False,
-                  "messages": [{"body": message_body(texto)}]},
+            params={"sendEmailToParticipants": "true" if notify_by_email else "false"},
+            json={
+                "participantIds": list(recipient_ids),
+                "messages": [{"body": message_body(texto)}],
+                "canBeRepliedTo": True,
+            },
         )
 
     async def reply(self, course_id: str, conversation_id: str, texto: str) -> dict[str, Any]:
+        """Responde numa conversa existente. **NÃO MEDIDO** (2026-09-17): a
+        captura cobriu abrir conversa, não responder. A rota segue a simetria
+        do resto da API interna e é a melhor hipótese — quem chamar primeiro
+        confere por `list_conversations`, nunca pela resposta."""
         return await self._write(
             "POST", f"/learn/api/v1/courses/{course_id}/conversations/{conversation_id}/messages",
             json={"body": message_body(texto)},
