@@ -196,3 +196,10 @@ def main() -> None:
     except (RuntimeError, ValueError) as exc:
         raise SystemExit(f"blackboard-mcp: {exc}") from None
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":  # `python -m blackboard_mcp.cli` tem que funcionar
+    # Sem isto, `python -m` IMPORTA o módulo e sai 0 sem fazer nada — uma
+    # execução que parece bem-sucedida e não executou comando nenhum. Custou
+    # um diagnóstico em 2026-09-17, com a captura "terminando" sem abrir nada.
+    main()
