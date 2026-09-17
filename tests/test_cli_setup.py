@@ -54,3 +54,20 @@ def test_prompt_profile_reprompts_on_an_invalid_name(monkeypatch: pytest.MonkeyP
     answers = iter(["nome invalido", "minha-faculdade"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert _prompt_profile("default") == "minha-faculdade"
+
+
+def test_module_can_be_run_with_dash_m() -> None:
+    """`python -m blackboard_mcp.cli` tem que EXECUTAR, não só importar.
+
+    Sem a guarda `__main__` o módulo importava e saía 0 em silêncio — uma
+    execução que parece bem-sucedida e não rodou comando nenhum (custou um
+    diagnóstico em 2026-09-17, com a captura "terminando" sem abrir janela)."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "blackboard_mcp.cli", "--help"],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-300:]
+    assert "capture-submission" in proc.stdout, proc.stdout[:300]

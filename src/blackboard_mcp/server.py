@@ -100,6 +100,14 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_course_activities(course_id)
 
     @server.tool()
+    async def submission_status(course_id: str, content_id: str) -> dict:
+        """Whether an activity was already submitted, how many attempts were
+        used and what files went with the last one. Read-only: never starts or
+        sends an attempt. `known=false` means the answer could not be
+        determined — it never guesses "not submitted"."""
+        return await client.submission_status(course_id, content_id)
+
+    @server.tool()
     async def read_open_attempt(course_id: str, content_id: str) -> dict:
         """Questions and options of the attempt ALREADY in progress for an
         assessment. Read-only: never starts an attempt (open=false if none)."""

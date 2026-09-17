@@ -108,7 +108,9 @@ class BlackboardClient:
         self._session = BlackboardSession(settings.base_url, settings.data_home, settings.profile)
         self._reauth_lock = asyncio.Lock()
 
-    async def _context(self, *, headless: bool) -> tuple[Any, BrowserContext, bool]:
+    async def _context(
+        self, *, headless: bool, extra_args: list[str] | None = None
+    ) -> tuple[Any, BrowserContext, bool]:
         prepare_profile(self.settings.profile_dir)
         playwright = await async_playwright().start()
         try:
@@ -127,7 +129,7 @@ class BlackboardClient:
             str(self.settings.profile_dir),
             executable_path=self.settings.chrome_path,
             headless=headless,
-            args=["--no-first-run", "--no-default-browser-check"],
+            args=["--no-first-run", "--no-default-browser-check", *(extra_args or [])],
         )
         return playwright, context, False
 
@@ -770,6 +772,124 @@ class BlackboardClient:
         from .links import with_activity_url
 
         return with_activity_url(self.settings.base_url, public_view(await self._assessment_detail(course_id, content_id)))
+
+    async def capture_submission(self, url: str, out_path: Path, *, minutes: float = 30.0) -> dict[str, Any]:
+        """Abre a atividade numa janela VISÍVEL e registra as escritas do envio.
+
+        Não envia nada: só escuta. O dono envia à mão e o arquivo resultante é o
+        contrato medido do qual a implementação do envio será escrita — em vez
+        de adivinhar endpoint de escrita contra uma conta acadêmica real.
+        """
+        from .capture import ozone_args, record
+
+        linhas: list[dict[str, Any]] = []
+        playwright, context, attached = await self._context(
+            headless=False, extra_args=ozone_args()
+        )
+        if not attached:
+            # Medido em 2026-09-17: num Chrome LANÇADO pelo Playwright, a UI do
+            # Ultra não inicializa — o bundle vem de CDN e o navegador recusa:
+            #
+            #   Unsafe attempt to load URL https://ultra.content.blackboardcdn.com/...
+            #   from frame with URL https://bb.<instituicao>...  :: origin
+            #
+            # A tela fica cinza e não há o que enviar nem o que observar. A
+            # captura só serve ACOPLADA ao Chrome de verdade do dono, onde a
+            # interface funciona. Avisar é obrigatório: uma captura que abre uma
+            # janela inútil e fica esperando parece funcionar e não é.
+            print(
+                "[captura] AVISO: nao foi possivel acoplar ao seu Chrome "
+                f"(porta {self.settings.debug_port}), entao uma janela NOVA foi aberta — "
+                "e nela a interface do Ultra nao carrega.\n"
+                "[captura] Feche esta janela e abra o SEU Chrome com:\n"
+                f"[captura]   google-chrome --remote-debugging-port={self.settings.debug_port}\n"
+                "[captura] Depois rode a captura de novo: ela se acopla sozinha.",
+                flush=True,
+            )
+        page = await self._page(context)
+
+        async def ao_responder(response: Any) -> None:
+            pedido = response.request
+            try:
+                corpo = pedido.post_data
+            except Exception:  # noqa: BLE001 — corpo indisponível não invalida o registro
+                corpo = None
+            linha = record(
+                method=pedido.method, url=pedido.url, headers=dict(pedido.headers),
+                body=corpo, status=response.status, base_url=self.settings.base_url,
+            )
+            if linha is None:
+                return
+            linhas.append(linha)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with out_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+            print(f"[captura] {linha['method']} {linha['status']} {linha['url'][:110]}", flush=True)
+
+        page.on("response", lambda r: asyncio.ensure_future(ao_responder(r)))
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+            print(f"[captura] janela aberta. Envie a atividade normalmente.\n"
+                  f"[captura] gravando escritas em {out_path}\n"
+                  f"[captura] a janela fecha sozinha em {minutes:.0f} min, ou feche a aba ao terminar.",
+                  flush=True)
+            await page.wait_for_event("close", timeout=minutes * 60_000)
+        except Exception as exc:  # noqa: BLE001 — timeout/fechamento é fim normal
+            print(f"[captura] encerrando: {type(exc).__name__}", flush=True)
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
+            await self._close(playwright, context, attached=attached)
+        return {"captured": len(linhas), "path": str(out_path)}
+
+    async def _gradebook_column_for(self, course_id: str, content_id: str) -> dict[str, Any] | None:
+        """Coluna do diário que corresponde a um conteúdo.
+
+        Pela LISTA de colunas, casando `contentId` — não pelo
+        `resource/x-bb-asmt-test-link` do item, que só existe em PROVA. Foi por
+        isso que a Atividade 09, um `Assignment`, não resolvia coluna nenhuma
+        pelo caminho do `read_open_attempt` (medido 2026-09-16).
+        """
+        listagem = await self._rest_get(f"/learn/api/v1/courses/{course_id}/gradebook/columns")
+        for coluna in (listagem.get("results") or []) if isinstance(listagem, dict) else []:
+            if isinstance(coluna, dict) and str(coluna.get("contentId") or "") == content_id:
+                return coluna
+        return None
+
+    async def submission_status(self, course_id: str, content_id: str) -> dict[str, Any]:
+        """Estado de entrega de uma atividade — só GET, nunca abre tentativa."""
+        from .submission_state import parse_submission_state
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not content_id.startswith("_") or not content_id.endswith("_1"):
+            raise ValueError("content_id invalido")
+
+        detalhe = await self._assessment_detail(course_id, content_id)
+        base = {
+            "course_id": course_id,
+            "content_id": content_id,
+            "title": str(detalhe.get("title") or ""),
+            "due_at": detalhe.get("due_at"),
+            "column_id": "",
+            "known": False,
+        }
+        coluna = await self._gradebook_column_for(course_id, content_id)
+        if coluna is None:
+            # Sem coluna não há como saber, e ADIVINHAR "não entregue" seria o
+            # pior resultado possível: o dono relaxaria achando que o sistema
+            # confirmou. `known=False` diz que a pergunta ficou sem resposta.
+            return base
+        permitidas = detalhe.get("attempts_allowed")
+        tentativas = await self._rest_get(
+            f"/learn/api/v1/courses/{course_id}/gradebook/columns/{coluna['id']}/attempts"
+        )
+        estado = parse_submission_state(
+            tentativas, attempts_allowed=permitidas if isinstance(permitidas, int) else None
+        )
+        return {**base, "column_id": str(coluna.get("id") or ""), "known": True, **estado}
 
     async def read_open_attempt(self, course_id: str, content_id: str) -> dict[str, Any]:
         """Questões e alternativas da tentativa JÁ ABERTA (`IN_PROGRESS`) de uma
