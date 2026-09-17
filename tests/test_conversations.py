@@ -9,6 +9,7 @@ destinatário em branco.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -134,3 +135,156 @@ async def test_reading_messages_never_writes(tmp_path: Path) -> None:
     # `_rest_get` é o único verbo usado; escrita vive noutra classe.
     assert espiao.await_count == 2
     assert not hasattr(cliente, "_rest_post")
+
+
+def test_the_class_code_never_leaks_into_the_person_name() -> None:
+    """Medido na conta real: esta instituição guarda a TURMA em `familyName` e
+    o nome completo em `givenName`. Concatenar produzia
+    "Lucas Dórea Cardoso UDF_Ciência da Computação (Bacharelado)_6N1_20262".
+    O próprio payload avisa qual usar, em `preferredDisplayName`."""
+    from blackboard_mcp.conversations import parse_message
+
+    bruto = {
+        "id": "_1_1", "postDate": "2026-08-11T00:47:00Z",
+        "sender": {"id": "_3937056_1", "givenName": "Lucas Dórea Cardoso",
+                   "familyName": "UDF_Ciência da Computação (Bacharelado)_6N1_20262",
+                   "preferredDisplayName": "GIVEN_NAME"},
+        "body": {"rawText": "<p>oi</p>"},
+    }
+    assert parse_message(bruto, BASE)["sender"]["name"] == "Lucas Dórea Cardoso"
+
+
+def test_a_normal_split_name_still_joins_both_parts() -> None:
+    """Anti-oco: sem a preferência declarada, sobrenome de verdade não some."""
+    from blackboard_mcp.conversations import parse_message
+
+    bruto = {
+        "id": "_2_1", "postDate": "2026-08-11T00:47:00Z",
+        "sender": {"id": "_9_1", "givenName": "Flavia", "familyName": "Maria Alves Lopes"},
+        "body": {"rawText": "<p>oi</p>"},
+    }
+    assert parse_message(bruto, BASE)["sender"]["name"] == "Flavia Maria Alves Lopes"
+
+
+def test_attachment_names_use_the_key_the_extractor_produces() -> None:
+    """O extrator devolve `file_name`. Procurar `name`/`fileName` mostra `None`
+    — foi o que a primeira prova ao vivo fez, e o defeito era do script, não
+    da biblioteca."""
+    from blackboard_mcp.conversations import parse_message
+
+    html_anexo = (
+        '<p><a href="/bbcswebdav/x.docx" data-bbtype="attachment" '
+        'data-bbfile="{&quot;fileName&quot;:&quot;Analise.docx&quot;}">Analise.docx</a></p>'
+    )
+    msg = parse_message({"id": "_3_1", "postDate": "2026-08-11T00:47:00Z",
+                         "body": {"rawText": html_anexo}}, BASE)
+    assert [a["file_name"] for a in msg["attachments"]] == ["Analise.docx"]
+
+
+# --- Envio de mensagem --------------------------------------------------------
+#
+# Portão mais estrito que o do `submit_assignment`: lá o conteúdo era um PDF já
+# revisado pelo dono e o efeito era só dele. Aqui o texto costuma ser REDIGIDO
+# por um modelo e vai para a caixa de OUTRA pessoa, com o nome do dono.
+
+def _writer_espiao(monkeypatch) -> list[tuple[str, Any]]:
+    from blackboard_mcp.submitting import MessageWriter
+
+    chamadas: list[tuple[str, Any]] = []
+
+    async def start_conversation(self, course_id, recipient_ids, texto):  # noqa: ANN001
+        chamadas.append(("start_conversation", tuple(recipient_ids)))
+        return {"id": "_nova_1"}
+
+    async def reply(self, course_id, conversation_id, texto):  # noqa: ANN001
+        chamadas.append(("reply", conversation_id))
+        return {"id": "_msg_1"}
+
+    monkeypatch.setattr(MessageWriter, "start_conversation", start_conversation)
+    monkeypatch.setattr(MessageWriter, "reply", reply)
+    return chamadas
+
+
+def _cliente_msg(tmp_path: Path, monkeypatch, conversas_depois: list[dict] | None = None):
+    cliente = BlackboardClient(Settings(profile="sober", base_url=BASE, data_home=tmp_path))
+    cliente.list_instructors = AsyncMock(return_value=[  # type: ignore[assignment]
+        {"id": "_3853586_1", "name": "Flavia Maria Alves Lopes", "role": "Instructor"}
+    ])
+    cliente.list_conversations = AsyncMock(return_value={  # type: ignore[assignment]
+        "conversations": conversas_depois if conversas_depois is not None else [{"id": "_nova_1"}]
+    })
+    return cliente
+
+
+@pytest.mark.asyncio
+async def test_a_message_is_never_sent_without_confirmation(tmp_path: Path, monkeypatch) -> None:
+    """O preview existe para ser LIDO antes. Um texto escrito por modelo indo
+    para a professora sem o dono ver é risco de outra natureza."""
+    chamadas = _writer_espiao(monkeypatch)
+    cliente = _cliente_msg(tmp_path, monkeypatch)
+    saida = await cliente.send_course_message(
+        CURSO, "Professora, boa noite.", recipient_ids=["_3853586_1"]
+    )
+    assert chamadas == [], "nada sai sem confirm"
+    assert saida["preview"] is True and saida["sent"] is False
+    assert saida["text"] == "Professora, boa noite."
+    assert saida["recipients"][0]["name"] == "Flavia Maria Alves Lopes", "quem recebe vem por NOME"
+
+
+@pytest.mark.asyncio
+async def test_with_confirmation_it_opens_the_conversation(tmp_path: Path, monkeypatch) -> None:
+    chamadas = _writer_espiao(monkeypatch)
+    cliente = _cliente_msg(tmp_path, monkeypatch)
+    saida = await cliente.send_course_message(
+        CURSO, "Segue a atividade.", recipient_ids=["_3853586_1"], confirm=True
+    )
+    assert chamadas == [("start_conversation", ("_3853586_1",))]
+    assert saida["sent"] is True and saida["conversation_id"] == "_nova_1"
+
+
+@pytest.mark.asyncio
+async def test_sent_is_read_back_not_taken_from_the_write(tmp_path: Path, monkeypatch) -> None:
+    """Anti-oco: a escrita devolveu um id, mas se a conversa não aparece na
+    listagem, `sent` é False. Acreditar em quem escreveu é verde oco."""
+    _writer_espiao(monkeypatch)
+    cliente = _cliente_msg(tmp_path, monkeypatch, conversas_depois=[])
+    saida = await cliente.send_course_message(
+        CURSO, "oi", recipient_ids=["_3853586_1"], confirm=True
+    )
+    assert saida["conversation_id"] == "_nova_1"
+    assert saida["sent"] is False, "o leitor nao achou a conversa — vale o leitor"
+
+
+@pytest.mark.asyncio
+async def test_new_and_reply_are_mutually_exclusive(tmp_path: Path, monkeypatch) -> None:
+    from blackboard_mcp.submitting import SubmissionError
+
+    chamadas = _writer_espiao(monkeypatch)
+    cliente = _cliente_msg(tmp_path, monkeypatch)
+    for kwargs in ({}, {"recipient_ids": ["_1_1"], "conversation_id": "_2_1"}):
+        with pytest.raises(SubmissionError, match="UM"):
+            await cliente.send_course_message(CURSO, "oi", confirm=True, **kwargs)
+    assert chamadas == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_recipient_is_flagged_not_hidden(tmp_path: Path, monkeypatch) -> None:
+    """Se o id não é do corpo docente, o preview diz isso — mandar para a turma
+    achando que fala com a professora é o erro caro aqui."""
+    _writer_espiao(monkeypatch)
+    cliente = _cliente_msg(tmp_path, monkeypatch)
+    saida = await cliente.send_course_message(CURSO, "oi", recipient_ids=["_desconhecido_1"])
+    assert "fora do corpo docente" in saida["recipients"][0]["name"]
+
+
+def test_message_body_escapes_what_the_model_wrote() -> None:
+    """Texto de modelo nunca injeta marcação na caixa de outra pessoa."""
+    from blackboard_mcp.submitting import SubmissionError, message_body
+
+    corpo = message_body("Oi <b>prof</b>\n\nsegue <script>alert(1)</script>")
+    assert "<script>" not in corpo["rawText"]
+    assert "&lt;script&gt;" in corpo["rawText"]
+    assert corpo["rawText"].count("<p>") == 2, "paragrafo em branco vira <p>, o resto e escapado"
+    for vazio in ("", "   ", "\n\n"):
+        with pytest.raises(SubmissionError):
+            message_body(vazio)

@@ -100,6 +100,21 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_course_activities(course_id)
 
     @server.tool()
+    async def send_course_message(
+        course_id: str, text: str, recipient_ids: list[str] | None = None,
+        conversation_id: str = "", confirm: bool = False,
+    ) -> dict:
+        """Send a message in a course's Messages tab. Goes into someone else's
+        inbox under the owner's name and CANNOT be undone. Defaults to a DRY
+        RUN: with confirm=false nothing is sent and you get the exact text and
+        recipients back. Show that preview to the person and only set
+        confirm=true after they approve THAT text."""
+        return await client.send_course_message(
+            course_id, text, recipient_ids=recipient_ids,
+            conversation_id=conversation_id, confirm=confirm,
+        )
+
+    @server.tool()
     async def list_instructors(course_id: str) -> list[dict]:
         """Who teaches this course — name and id, for addressing a message.
         Read-only. The public API is the only one that exposes the role."""

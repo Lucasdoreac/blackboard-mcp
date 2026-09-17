@@ -47,6 +47,8 @@ _TIMEOUT_S = 120.0
 # Teto de tamanho do anexo. Não é regra do Blackboard — é para uma chamada não
 # ficar pendurada minutos num arquivo que ninguém quis mandar.
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
+# Teto de mensagem: o que não cabe aqui é anexo, não recado.
+MAX_MESSAGE_CHARS = 20_000
 
 
 class SubmissionError(RuntimeError):
@@ -166,7 +168,57 @@ class SubmissionWriter:
         )
 
 
+def message_body(texto: str) -> dict[str, str]:
+    """Corpo de mensagem no formato que o Blackboard guarda (`rawText`, HTML).
+
+    O texto do dono é ESCAPADO: um `<` digitado por engano não pode virar tag,
+    e conteúdo vindo de modelo nunca injeta marcação na caixa de outra pessoa.
+    Quebra de linha vira parágrafo, que é como a interface exibe."""
+    import html as _html
+
+    limpo = (texto or "").strip()
+    if not limpo:
+        raise SubmissionError("mensagem vazia — nao mando silencio para ninguem")
+    if len(limpo) > MAX_MESSAGE_CHARS:
+        raise SubmissionError(f"mensagem longa demais ({len(limpo)} chars)")
+    paragrafos = [_html.escape(p.strip()) for p in limpo.split("\n\n") if p.strip()]
+    return {"rawText": "".join(f"<p>{p}</p>" for p in paragrafos)}
+
+
+class MessageWriter(SubmissionWriter):
+    """Cria conversa e responde na aba Mensagens.
+
+    Herda o transporte de `SubmissionWriter` — mesma sessão, mesma ausência de
+    retry — porque o motivo é o mesmo: repetir uma escrita pode duplicar, e
+    mensagem duplicada na caixa de um professor não se desfaz.
+
+    Contrato de ESCRITA ainda NÃO medido contra a plataforma (2026-09-17). A
+    leitura foi: `permissions.create` é `true` e o corpo guardado é
+    `{"rawText": "<html>"}`. Os endpoints abaixo seguem a simetria do resto da
+    API interna e são a melhor hipótese disponível — quem chamar primeiro deve
+    conferir o resultado por `list_conversations`, nunca pela resposta."""
+
+    async def start_conversation(self, course_id: str, recipient_ids: list[str],
+                                 texto: str) -> dict[str, Any]:
+        if not recipient_ids:
+            raise SubmissionError("sem destinatario — nao mando mensagem para ninguem")
+        return await self._write(
+            "POST", f"/learn/api/v1/courses/{course_id}/conversations",
+            json={"participantIds": list(recipient_ids), "includesAllMembers": False,
+                  "messages": [{"body": message_body(texto)}]},
+        )
+
+    async def reply(self, course_id: str, conversation_id: str, texto: str) -> dict[str, Any]:
+        return await self._write(
+            "POST", f"/learn/api/v1/courses/{course_id}/conversations/{conversation_id}/messages",
+            json={"body": message_body(texto)},
+        )
+
+
 __all__ = [
+    "MAX_MESSAGE_CHARS",
+    "MessageWriter",
+    "message_body",
     "MAX_UPLOAD_BYTES",
     "SUBMITTED_STATUS",
     "SubmissionError",
