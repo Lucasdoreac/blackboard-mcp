@@ -844,6 +844,174 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
         return {"captured": len(linhas), "path": str(out_path)}
 
+    async def send_course_message(
+        self, course_id: str, text: str, *, recipient_ids: list[str] | None = None,
+        conversation_id: str = "", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Manda mensagem na aba Mensagens. Sem `confirm`, NÃO envia.
+
+        Portão mais estrito que o do `submit_assignment`, e por um motivo: lá o
+        conteúdo era um PDF que o dono já tinha revisado, e o efeito era só
+        dele. Aqui o texto costuma ser REDIGIDO por um modelo e vai parar na
+        caixa de OUTRA pessoa, com o nome do dono, sem desfazer. Então o
+        preview devolve o texto EXATO que sairia e para quem — para ser lido
+        antes, não depois.
+
+        `recipient_ids` abre conversa nova; `conversation_id` responde uma
+        existente. Um ou outro, nunca os dois.
+        """
+        from .submitting import MessageWriter, SubmissionError, message_body
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if bool(recipient_ids) == bool(conversation_id):
+            raise SubmissionError(
+                "escolha UM: `recipient_ids` para conversa nova, ou `conversation_id` para responder"
+            )
+        corpo = message_body(text)  # valida e escapa ANTES de qualquer escrita
+
+        destinatarios: list[dict[str, Any]] = []
+        if recipient_ids:
+            conhecidos = {p["id"]: p for p in await self.list_instructors(course_id)}
+            for ident in recipient_ids:
+                destinatarios.append(conhecidos.get(ident) or {"id": ident, "name": "(fora do corpo docente)"})
+
+        plano = {
+            "course_id": course_id,
+            "mode": "reply" if conversation_id else "new",
+            "conversation_id": conversation_id,
+            "recipients": destinatarios,
+            "text": text.strip(),
+            "html": corpo["rawText"],
+        }
+        if not confirm:
+            return {**plano, "sent": False, "preview": True,
+                    "warning": "nada foi enviado; leia o texto acima e chame de novo com confirm=true"}
+
+        escritor = MessageWriter(self._session)
+        if conversation_id:
+            resposta = await escritor.reply(course_id, conversation_id, text)
+            alvo = conversation_id
+        else:
+            resposta = await escritor.start_conversation(course_id, list(recipient_ids or []), text)
+            alvo = str(resposta.get("id") or "")
+
+        # Confere pelo LEITOR, nunca pela resposta de quem escreveu.
+        depois = await self.list_conversations(course_id)
+        existe = any(c["id"] == alvo for c in depois["conversations"]) if alvo else False
+        return {**plano, "preview": False, "conversation_id": alvo, "sent": existe}
+
+    async def list_instructors(self, course_id: str) -> list[dict[str, Any]]:
+        """Quem ENSINA a disciplina — nome e id. Só GET.
+
+        Vai pela API PÚBLICA de propósito: a interna (`/memberships`) devolve o
+        papel como `'S'` e sem nome, então não serve para escolher
+        destinatário. Medido em 2026-09-17."""
+        from .conversations import parse_instructors
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        dados = await self._rest_get(
+            f"/learn/api/public/v1/courses/{course_id}/users",
+            {"expand": "user", "limit": "200"},
+        )
+        return parse_instructors(dados)
+
+    async def list_conversations(self, course_id: str) -> dict[str, Any]:
+        """Conversas da aba Mensagens, da mais recente para a mais antiga. Só GET."""
+        from .conversations import can_write, parse_conversations
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        dados = await self._rest_get(f"/learn/api/v1/courses/{course_id}/conversations")
+        return {
+            "course_id": course_id,
+            "can_send": can_write(dados),
+            "conversations": parse_conversations(dados, self.settings.base_url),
+        }
+
+    async def read_conversation(self, course_id: str, conversation_id: str) -> dict[str, Any]:
+        """Uma conversa inteira, com o TEXTO de cada mensagem. Só GET."""
+        from .conversations import parse_conversation
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not conversation_id.startswith("_"):
+            raise ValueError("conversation_id invalido")
+        dados = await self._rest_get(
+            f"/learn/api/v1/courses/{course_id}/conversations/{conversation_id}"
+        )
+        conversa = parse_conversation(dados, self.settings.base_url)
+        return conversa or {"id": conversation_id, "course_id": course_id, "messages": []}
+
+    async def submit_assignment(
+        self, course_id: str, content_id: str, file_path: str, *,
+        text: str = "", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Envia uma atividade: upload -> tentativa -> ENVIO. Irreversível.
+
+        `confirm=False` (o padrão) NÃO escreve nada: devolve o plano, o estado
+        atual da entrega e o que seria consumido. É o portão pedido pelo dono em
+        2026-09-17 — "sempre com minha confirmação explícita antes de cada
+        envio" —, e ele é do tipo que precisa ser INERTE por omissão: quem
+        esquece o parâmetro não entrega por acidente.
+
+        Contrato medido, não deduzido: ver `submitting.py`.
+        """
+        from pathlib import Path
+
+        from .submitting import SubmissionError, SubmissionWriter, file_part, submission_files
+
+        estado = await self.submission_status(course_id, content_id)
+        if not estado.get("known"):
+            raise SubmissionError(
+                "nao consegui achar a coluna desta atividade; nao envio o que nao sei conferir"
+            )
+        caminho = Path(file_path)
+        nome, dados, tipo = file_part(caminho)  # valida ANTES de qualquer escrita
+        restantes = estado.get("attempts_left")
+
+        plano = {
+            "course_id": course_id,
+            "content_id": content_id,
+            "title": estado.get("title"),
+            "due_at": estado.get("due_at"),
+            "file": {"name": nome, "bytes": len(dados), "mimetype": tipo},
+            "text": text,
+            "already_submitted": bool(estado.get("submitted")),
+            "attempts_used": estado.get("attempts_used"),
+            "attempts_left": restantes,
+            "steps": ["upload", "start_attempt", "submit_attempt"],
+        }
+        if not confirm:
+            return {**plano, "submitted": False,
+                    "preview": True,
+                    "warning": "nada foi enviado; chame de novo com confirm=true para ENVIAR"}
+        if isinstance(restantes, int) and restantes <= 0:
+            raise SubmissionError("nao ha tentativa disponivel nesta atividade")
+
+        escritor = SubmissionWriter(self._session)
+        arquivo = await escritor.upload(caminho)
+        arquivos = submission_files(arquivo)
+        tentativa = await escritor.start_attempt(course_id, str(estado["column_id"]), arquivos)
+        attempt_id = str(tentativa.get("id") or "")
+        if not attempt_id:
+            raise SubmissionError("a tentativa foi criada sem id; nao prossigo para o envio")
+        enviado = await escritor.submit_attempt(course_id, attempt_id, arquivos, text)
+
+        # Confere pelo MESMO leitor que o resto usa — declarar sucesso pela
+        # resposta do POST seria acreditar em quem escreveu, não no estado.
+        depois = await self.submission_status(course_id, content_id)
+        return {
+            **plano,
+            "preview": False,
+            "attempt_id": attempt_id,
+            "status": str(enviado.get("status") or ""),
+            "submitted": bool(depois.get("submitted")),
+            "attempts_left": depois.get("attempts_left"),
+            "files": depois.get("files"),
+        }
+
     async def _gradebook_column_for(self, course_id: str, content_id: str) -> dict[str, Any] | None:
         """Coluna do diário que corresponde a um conteúdo.
 
