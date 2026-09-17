@@ -32,6 +32,20 @@ from .assessment_detail import _raw, extract_instructions
 TEACHING_ROLES = frozenset({"Instructor", "TeachingAssistant", "CourseBuilder", "Grader"})
 
 
+def _prefere_so_o_primeiro(user: dict[str, Any]) -> bool:
+    """O payload diz qual parte do nome exibir, e às vezes só uma serve.
+
+    Medido em 2026-09-17: nesta instituição o `familyName` guarda a TURMA
+    (`UDF_Ciência da Computação (Bacharelado)_6N1_20262`) e o `givenName`
+    guarda o nome completo. Concatenar os dois produz
+    "Lucas Dórea Cardoso UDF_Ciência da Computação…" — e o próprio payload
+    avisa disso em `preferredDisplayName`. A grafia muda entre as APIs
+    (`GIVEN_NAME` na interna, `GivenName` na pública), então compara-se
+    normalizado."""
+    preferencia = str(user.get("preferredDisplayName") or "")
+    return preferencia.replace("_", "").casefold() == "givenname"
+
+
 def _person(user: Any, fallback_id: str = "") -> dict[str, Any]:
     """Nome legível + id de um usuário, seja qual for o formato do payload.
 
@@ -42,9 +56,12 @@ def _person(user: Any, fallback_id: str = "") -> dict[str, Any]:
         return {"id": fallback_id, "name": ""}
     nome = user.get("name")
     if isinstance(nome, dict):
-        partes = [str(nome.get("given") or ""), str(nome.get("family") or "")]
+        primeiro, ultimo = str(nome.get("given") or ""), str(nome.get("family") or "")
+        preferencia = _prefere_so_o_primeiro({**user, **nome})
     else:
-        partes = [str(user.get("givenName") or ""), str(user.get("familyName") or "")]
+        primeiro, ultimo = str(user.get("givenName") or ""), str(user.get("familyName") or "")
+        preferencia = _prefere_so_o_primeiro(user)
+    partes = [primeiro] if preferencia and primeiro else [primeiro, ultimo]
     return {
         "id": str(user.get("id") or fallback_id or ""),
         "name": " ".join(p for p in partes if p).strip(),

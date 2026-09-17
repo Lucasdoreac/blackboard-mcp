@@ -844,6 +844,63 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
         return {"captured": len(linhas), "path": str(out_path)}
 
+    async def send_course_message(
+        self, course_id: str, text: str, *, recipient_ids: list[str] | None = None,
+        conversation_id: str = "", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Manda mensagem na aba Mensagens. Sem `confirm`, NÃO envia.
+
+        Portão mais estrito que o do `submit_assignment`, e por um motivo: lá o
+        conteúdo era um PDF que o dono já tinha revisado, e o efeito era só
+        dele. Aqui o texto costuma ser REDIGIDO por um modelo e vai parar na
+        caixa de OUTRA pessoa, com o nome do dono, sem desfazer. Então o
+        preview devolve o texto EXATO que sairia e para quem — para ser lido
+        antes, não depois.
+
+        `recipient_ids` abre conversa nova; `conversation_id` responde uma
+        existente. Um ou outro, nunca os dois.
+        """
+        from .submitting import MessageWriter, SubmissionError, message_body
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if bool(recipient_ids) == bool(conversation_id):
+            raise SubmissionError(
+                "escolha UM: `recipient_ids` para conversa nova, ou `conversation_id` para responder"
+            )
+        corpo = message_body(text)  # valida e escapa ANTES de qualquer escrita
+
+        destinatarios: list[dict[str, Any]] = []
+        if recipient_ids:
+            conhecidos = {p["id"]: p for p in await self.list_instructors(course_id)}
+            for ident in recipient_ids:
+                destinatarios.append(conhecidos.get(ident) or {"id": ident, "name": "(fora do corpo docente)"})
+
+        plano = {
+            "course_id": course_id,
+            "mode": "reply" if conversation_id else "new",
+            "conversation_id": conversation_id,
+            "recipients": destinatarios,
+            "text": text.strip(),
+            "html": corpo["rawText"],
+        }
+        if not confirm:
+            return {**plano, "sent": False, "preview": True,
+                    "warning": "nada foi enviado; leia o texto acima e chame de novo com confirm=true"}
+
+        escritor = MessageWriter(self._session)
+        if conversation_id:
+            resposta = await escritor.reply(course_id, conversation_id, text)
+            alvo = conversation_id
+        else:
+            resposta = await escritor.start_conversation(course_id, list(recipient_ids or []), text)
+            alvo = str(resposta.get("id") or "")
+
+        # Confere pelo LEITOR, nunca pela resposta de quem escreveu.
+        depois = await self.list_conversations(course_id)
+        existe = any(c["id"] == alvo for c in depois["conversations"]) if alvo else False
+        return {**plano, "preview": False, "conversation_id": alvo, "sent": existe}
+
     async def list_instructors(self, course_id: str) -> list[dict[str, Any]]:
         """Quem ENSINA a disciplina — nome e id. Só GET.
 
