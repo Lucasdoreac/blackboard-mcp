@@ -124,6 +124,11 @@ def main() -> None:
         # tentativa de alguém sem desfazer.
         if not args.url:
             raise SystemExit("capture-submission requer --url da atividade")
+        from .capture import display_hint
+
+        impedimento = display_hint()
+        if impedimento:
+            raise SystemExit(f"capture-submission: {impedimento}")
         from pathlib import Path
 
         from .client import BlackboardClient

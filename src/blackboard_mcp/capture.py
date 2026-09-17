@@ -98,10 +98,32 @@ def record(
     }
 
 
+def display_hint() -> str | None:
+    """Motivo pelo qual a janela não abriria aqui, ou None se abriria.
+
+    Sem isto o Playwright estoura um erro de "Missing X server" que não diz a
+    quem lê o que fazer. A captura é feita por uma PESSOA, na frente da tela —
+    a mensagem tem que caber nessa situação."""
+    import os
+    import sys
+
+    if sys.platform in {"darwin", "win32"}:
+        return None
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return None
+    return (
+        "sem sessão gráfica (DISPLAY vazio): a captura precisa de uma janela "
+        "VISÍVEL, porque quem envia a atividade é você. Rode este comando na "
+        "própria máquina, ou por acesso remoto de tela, e não por `ssh` puro. "
+        "Numa sessão já aberta, costuma bastar `DISPLAY=:0` antes do comando."
+    )
+
+
 __all__ = [
     "REDACTED",
     "SENSITIVE_HEADERS",
     "WRITE_METHODS",
+    "display_hint",
     "parse_body",
     "record",
     "redact_body",

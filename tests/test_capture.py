@@ -86,3 +86,20 @@ def test_capture_is_not_hollow() -> None:
     assert parse_body(None) is None
     limpo = {"attemptId": "_9_1", "status": "NEEDS_GRADING"}
     assert redact_body(limpo) == limpo
+
+
+def test_missing_display_explains_itself_to_a_person(monkeypatch) -> None:
+    """A captura é feita por uma PESSOA na frente da tela. Deixar o Playwright
+    estourar "Missing X server" não diz a quem lê o que fazer."""
+    import sys
+
+    from blackboard_mcp.capture import display_hint
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    aviso = display_hint()
+    assert aviso and "DISPLAY" in aviso and "ssh" in aviso
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert display_hint() is None, "com tela, nada a avisar"
