@@ -786,6 +786,26 @@ class BlackboardClient:
         playwright, context, attached = await self._context(
             headless=False, extra_args=ozone_args()
         )
+        if not attached:
+            # Medido em 2026-09-17: num Chrome LANÇADO pelo Playwright, a UI do
+            # Ultra não inicializa — o bundle vem de CDN e o navegador recusa:
+            #
+            #   Unsafe attempt to load URL https://ultra.content.blackboardcdn.com/...
+            #   from frame with URL https://bb.<instituicao>...  :: origin
+            #
+            # A tela fica cinza e não há o que enviar nem o que observar. A
+            # captura só serve ACOPLADA ao Chrome de verdade do dono, onde a
+            # interface funciona. Avisar é obrigatório: uma captura que abre uma
+            # janela inútil e fica esperando parece funcionar e não é.
+            print(
+                "[captura] AVISO: nao foi possivel acoplar ao seu Chrome "
+                f"(porta {self.settings.debug_port}), entao uma janela NOVA foi aberta — "
+                "e nela a interface do Ultra nao carrega.\n"
+                "[captura] Feche esta janela e abra o SEU Chrome com:\n"
+                f"[captura]   google-chrome --remote-debugging-port={self.settings.debug_port}\n"
+                "[captura] Depois rode a captura de novo: ela se acopla sozinha.",
+                flush=True,
+            )
         page = await self._page(context)
 
         async def ao_responder(response: Any) -> None:
