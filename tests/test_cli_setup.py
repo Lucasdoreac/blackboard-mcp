@@ -71,3 +71,14 @@ def test_module_can_be_run_with_dash_m() -> None:
     )
     assert proc.returncode == 0, proc.stderr[-300:]
     assert "capture-submission" in proc.stdout, proc.stdout[:300]
+
+
+def test_capture_is_not_named_after_the_first_thing_it_measured():
+    """O gravador filtra por MÉTODO e por host, nunca por assunto — mede
+    qualquer escrita do Ultra, e o nome `capture-submission` sugeria o
+    contrário. O nome antigo segue aceito para não quebrar o hábito."""
+    from blackboard_mcp.cli import _parser
+
+    escolhas = _parser()._actions[1].choices
+    assert "capture" in escolhas
+    assert "capture-submission" in escolhas, "o nome antigo não some de repente"

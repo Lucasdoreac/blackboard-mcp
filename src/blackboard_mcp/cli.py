@@ -91,14 +91,14 @@ def _run_setup(profile_hint: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackboard-mcp")
-    parser.add_argument("command", choices=("setup", "doctor", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "capture-submission", "serve", "serve-http"))
+    parser.add_argument("command", choices=("setup", "doctor", "login", "auth-status", "terms", "courses", "register-course", "registered-courses", "sync-registered", "content", "tree", "sync", "sync-all", "assessments", "download", "archive-pdfs", "capture", "capture-submission", "serve", "serve-http"))
     parser.add_argument("--profile", default="default")
     parser.add_argument("--course-id")
     parser.add_argument("--content-id")
     parser.add_argument("--title")
     parser.add_argument("--term")
-    parser.add_argument("--url", help="capture-submission: URL da atividade a abrir")
-    parser.add_argument("--out", help="capture-submission: arquivo .jsonl do registro")
+    parser.add_argument("--url", help="capture: URL da página a abrir e observar")
+    parser.add_argument("--out", help="capture: arquivo .jsonl do registro")
     parser.add_argument("--minutes", type=float, default=30.0)
     parser.add_argument("--socket")
     parser.add_argument("--bridge-key-env", default="BLACKBOARD_BRIDGE_KEY")
@@ -117,24 +117,25 @@ def main() -> None:
     if args.command == "doctor":
         print(json.dumps(doctor_report(args.profile), ensure_ascii=False, indent=2))
         return
-    if args.command == "capture-submission":
-        # Aprende o contrato de ENVIO observando um envio manual. Não envia
-        # nada: o projeto é read-only, e descobrir endpoint de escrita por
-        # tentativa e erro contra conta acadêmica real pode queimar uma
-        # tentativa de alguém sem desfazer.
+    if args.command in {"capture", "capture-submission"}:
+        # Aprende um contrato de ESCRITA observando o dono fazer a coisa à mão.
+        # Não envia nada. Serve para qualquer escrita do Ultra — foi escrito
+        # para o envio de atividade e mede também a aba Mensagens, porque o
+        # gravador filtra por MÉTODO e por host, nunca por assunto. O nome
+        # antigo continua valendo para não quebrar o hábito de quem já usa.
         if not args.url:
-            raise SystemExit("capture-submission requer --url da atividade")
+            raise SystemExit(f"{args.command} requer --url da página a observar")
         from .capture import display_hint
 
         impedimento = display_hint()
         if impedimento:
-            raise SystemExit(f"capture-submission: {impedimento}")
+            raise SystemExit(f"{args.command}: {impedimento}")
         from pathlib import Path
 
         from .client import BlackboardClient
         from .config import Settings
 
-        destino = Path(args.out or f"captura-envio-{args.profile}.jsonl")
+        destino = Path(args.out or f"captura-{args.profile}.jsonl")
         cliente = BlackboardClient(Settings.from_profile(args.profile))
         print(json.dumps(
             asyncio.run(cliente.capture_submission(args.url, destino, minutes=args.minutes)),
