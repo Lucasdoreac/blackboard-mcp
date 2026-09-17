@@ -48,18 +48,33 @@ def _attempts(payload: Any) -> list[dict[str, Any]]:
 
 
 def _file_names(attempt: dict[str, Any]) -> list[str]:
-    envio = attempt.get("studentSubmission")
-    arquivos = envio.get("files") if isinstance(envio, dict) else None
+    """Nomes dos ANEXOS. Eles vivem em `studentSubmissionFiles[]`, não dentro de
+    `studentSubmission` — este é o envio de TEXTO (`rawText`/`displayText`), e a
+    atividade aceita os dois. Medido em 2026-09-16: a primeira versão procurava
+    em `studentSubmission.files` e devolvia lista vazia para uma tentativa que
+    tinha dois PDFs anexados."""
+    arquivos = attempt.get("studentSubmissionFiles")
     if not isinstance(arquivos, list):
         return []
     nomes = []
     for arquivo in arquivos:
         if not isinstance(arquivo, dict):
             continue
-        nome = arquivo.get("name") or arquivo.get("linkName") or (arquivo.get("file") or {}).get("fileName")
+        nome = (
+            (arquivo.get("file") or {}).get("fileName")
+            or arquivo.get("name")
+            or arquivo.get("linkName")
+        )
         if nome:
             nomes.append(str(nome))
     return nomes
+
+
+def _submitted_text(attempt: dict[str, Any]) -> str:
+    envio = attempt.get("studentSubmission")
+    if not isinstance(envio, dict):
+        return ""
+    return str(envio.get("displayText") or envio.get("rawText") or "").strip()
 
 
 def parse_submission_state(payload: Any, *, attempts_allowed: int | None = None) -> dict[str, Any]:
@@ -89,6 +104,7 @@ def parse_submission_state(payload: Any, *, attempts_allowed: int | None = None)
         "latest_at": str(ultima.get("attemptDate")) if ultima and ultima.get("attemptDate") else None,
         "grade": str(ultima.get("displayGrade")) if ultima and ultima.get("displayGrade") else None,
         "files": _file_names(ultima) if ultima else [],
+        "has_text": bool(_submitted_text(ultima)) if ultima else False,
     }
 
 

@@ -31,9 +31,11 @@ def _entregue(attempt_id: str, quando: str, arquivos: list[str] | None = None) -
         "status": "NEEDS_GRADING",
         "attemptDate": quando,
         "displayGrade": None,
-        "studentSubmission": {
-            "files": [{"name": n, "linkName": n, "file": {"fileName": n}} for n in (arquivos or [])]
-        },
+        # Anexo vai em `studentSubmissionFiles`; `studentSubmission` é o TEXTO.
+        "studentSubmissionFiles": [
+            {"name": n, "linkName": n, "file": {"fileName": n}} for n in (arquivos or [])
+        ],
+        "studentSubmission": {"displayText": "", "rawText": ""},
     }
 
 
@@ -78,6 +80,24 @@ def test_the_latest_attempt_wins_regardless_of_lookup_order() -> None:
     assert estado["attempts_used"] == 2
     assert estado["attempts_left"] == 0
     assert estado["files"] == ["novo.pdf"], "a última tentativa é a que descreve o estado"
+
+
+def test_text_submission_is_distinguished_from_attachments() -> None:
+    """A atividade aceita texto E arquivo. `studentSubmission` é o texto e
+    `studentSubmissionFiles` são os anexos — a primeira versão deste módulo
+    procurava anexo dentro do texto e devolvia lista vazia para uma tentativa
+    com dois PDFs (medido na conta real, 2026-09-16)."""
+    so_texto = {"lookup": {"_1_1": [{
+        "id": "_1_1", "status": "NEEDS_GRADING", "attemptDate": "2026-09-01T10:00:00Z",
+        "studentSubmission": {"displayText": "minha resposta em texto", "rawText": "<p>x</p>"},
+    }]}}
+    estado = parse_submission_state(so_texto, attempts_allowed=2)
+    assert estado["submitted"] is True
+    assert estado["files"] == [] and estado["has_text"] is True
+
+    so_arquivo = {"lookup": {"_2_1": [_entregue("_2_1", "2026-09-02T10:00:00Z", ["a.pdf"])]}}
+    estado = parse_submission_state(so_arquivo, attempts_allowed=2)
+    assert estado["files"] == ["a.pdf"] and estado["has_text"] is False
 
 
 def test_parser_is_not_hollow() -> None:
