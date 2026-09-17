@@ -98,6 +98,28 @@ def record(
     }
 
 
+def ozone_args() -> list[str]:
+    """Argumentos extras para a janela abrir na sessão gráfica do usuário.
+
+    Numa sessão WAYLAND, falar Wayland direto evita o XWayland — que exige um
+    cookie de autorização que o GNOME não deixa em `~/.Xauthority`. Medido em
+    2026-09-17 no host do dono: o Chrome morria com
+
+        Authorization required, but no authorization protocol specified
+        Missing X server or $DISPLAY
+
+    mesmo com `DISPLAY=:0` e o socket `X0` existindo. O socket existir não
+    significa que se pode conectar nele."""
+    import os
+    import sys
+
+    if sys.platform != "linux":
+        return []
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return ["--ozone-platform=wayland"]
+    return []
+
+
 def display_hint() -> str | None:
     """Motivo pelo qual a janela não abriria aqui, ou None se abriria.
 
@@ -124,6 +146,7 @@ __all__ = [
     "SENSITIVE_HEADERS",
     "WRITE_METHODS",
     "display_hint",
+    "ozone_args",
     "parse_body",
     "record",
     "redact_body",

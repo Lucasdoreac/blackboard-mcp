@@ -103,3 +103,33 @@ def test_missing_display_explains_itself_to_a_person(monkeypatch) -> None:
 
     monkeypatch.setenv("DISPLAY", ":0")
     assert display_hint() is None, "com tela, nada a avisar"
+
+
+def test_wayland_session_talks_wayland_instead_of_xwayland(monkeypatch) -> None:
+    """Medido no host do dono (2026-09-17): com `DISPLAY=:0` e o socket `X0`
+    existindo, o Chrome ainda morria com "Authorization required, but no
+    authorization protocol specified" — o XWayland exige um cookie que o GNOME
+    não deixa em `~/.Xauthority`. Falar Wayland direto pula esse problema."""
+    import sys
+
+    from blackboard_mcp.capture import ozone_args
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert ozone_args() == ["--ozone-platform=wayland"]
+
+
+def test_x11_session_gets_no_extra_args(monkeypatch) -> None:
+    """Anti-oco: forçar Wayland numa sessão X11 quebraria o que funcionava."""
+    import sys
+
+    from blackboard_mcp.capture import ozone_args
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert ozone_args() == []
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert ozone_args() == [], "fora do Linux não existe ozone"

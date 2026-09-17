@@ -108,7 +108,9 @@ class BlackboardClient:
         self._session = BlackboardSession(settings.base_url, settings.data_home, settings.profile)
         self._reauth_lock = asyncio.Lock()
 
-    async def _context(self, *, headless: bool) -> tuple[Any, BrowserContext, bool]:
+    async def _context(
+        self, *, headless: bool, extra_args: list[str] | None = None
+    ) -> tuple[Any, BrowserContext, bool]:
         prepare_profile(self.settings.profile_dir)
         playwright = await async_playwright().start()
         try:
@@ -127,7 +129,7 @@ class BlackboardClient:
             str(self.settings.profile_dir),
             executable_path=self.settings.chrome_path,
             headless=headless,
-            args=["--no-first-run", "--no-default-browser-check"],
+            args=["--no-first-run", "--no-default-browser-check", *(extra_args or [])],
         )
         return playwright, context, False
 
@@ -778,10 +780,12 @@ class BlackboardClient:
         contrato medido do qual a implementação do envio será escrita — em vez
         de adivinhar endpoint de escrita contra uma conta acadêmica real.
         """
-        from .capture import record
+        from .capture import ozone_args, record
 
         linhas: list[dict[str, Any]] = []
-        playwright, context, attached = await self._context(headless=False)
+        playwright, context, attached = await self._context(
+            headless=False, extra_args=ozone_args()
+        )
         page = await self._page(context)
 
         async def ao_responder(response: Any) -> None:
