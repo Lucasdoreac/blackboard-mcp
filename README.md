@@ -1,14 +1,20 @@
 # Blackboard MCP
 
-> Local, read-only access to Blackboard Ultra for any MCP-compatible client.
+> Local access to Blackboard Ultra for any MCP-compatible client: reads freely,
+> writes only your assignment submission, and only when you say so.
 
 Deixa um assistente de IA (Claude, Codex ou outro que fale MCP) **ler o seu
 Blackboard** — disciplinas, materiais, atividades, prazos e avisos — para
 você perguntar coisas como *"quais atividades vencem esta semana?"* ou
 *"resume o aviso novo de Cálculo"*.
 
-- **Só lê.** Nunca entrega atividade, nunca abre tentativa de prova, nunca
-  escreve nada no Blackboard.
+- **Lê tudo, escreve uma coisa só.** A única escrita é `submit_assignment`:
+  entregar uma atividade. Ela é **inerte por padrão** — sem `confirm=true` ela
+  não manda nada, só mostra o que faria e quantas tentativas restam. Nunca abre
+  tentativa de prova, nunca muda nota, nunca apaga nada.
+  Todo o resto do projeto continua sendo leitura, e isso é garantido por teste:
+  a sessão de leitura não tem método de escrita, que vive numa classe separada
+  (`submitting.SubmissionWriter`).
 - **Roda no seu computador.** Seu login fica numa pasta só sua; senha, código
   de verificação e cookies nunca são mostrados nem enviados a ninguém.
 - **Nasceu para a UDF** (é o Blackboard que vem configurado por padrão) e

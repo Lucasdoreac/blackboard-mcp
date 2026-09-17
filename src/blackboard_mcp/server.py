@@ -100,6 +100,18 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_course_activities(course_id)
 
     @server.tool()
+    async def submit_assignment(
+        course_id: str, content_id: str, file_path: str, text: str = "", confirm: bool = False
+    ) -> dict:
+        """Submit an assignment attempt with a file. IRREVERSIBLE and consumes
+        one attempt. Defaults to a DRY RUN: with confirm=false nothing is
+        written and you get the plan plus the current submission state. Only
+        set confirm=true after the person explicitly approved THIS submission."""
+        return await client.submit_assignment(
+            course_id, content_id, file_path, text=text, confirm=confirm
+        )
+
+    @server.tool()
     async def submission_status(course_id: str, content_id: str) -> dict:
         """Whether an activity was already submitted, how many attempts were
         used and what files went with the last one. Read-only: never starts or

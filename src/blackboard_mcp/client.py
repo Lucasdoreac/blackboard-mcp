@@ -844,6 +844,74 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
         return {"captured": len(linhas), "path": str(out_path)}
 
+    async def submit_assignment(
+        self, course_id: str, content_id: str, file_path: str, *,
+        text: str = "", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Envia uma atividade: upload -> tentativa -> ENVIO. Irreversível.
+
+        `confirm=False` (o padrão) NÃO escreve nada: devolve o plano, o estado
+        atual da entrega e o que seria consumido. É o portão pedido pelo dono em
+        2026-09-17 — "sempre com minha confirmação explícita antes de cada
+        envio" —, e ele é do tipo que precisa ser INERTE por omissão: quem
+        esquece o parâmetro não entrega por acidente.
+
+        Contrato medido, não deduzido: ver `submitting.py`.
+        """
+        from pathlib import Path
+
+        from .submitting import SubmissionError, SubmissionWriter, file_part, submission_files
+
+        estado = await self.submission_status(course_id, content_id)
+        if not estado.get("known"):
+            raise SubmissionError(
+                "nao consegui achar a coluna desta atividade; nao envio o que nao sei conferir"
+            )
+        caminho = Path(file_path)
+        nome, dados, tipo = file_part(caminho)  # valida ANTES de qualquer escrita
+        restantes = estado.get("attempts_left")
+
+        plano = {
+            "course_id": course_id,
+            "content_id": content_id,
+            "title": estado.get("title"),
+            "due_at": estado.get("due_at"),
+            "file": {"name": nome, "bytes": len(dados), "mimetype": tipo},
+            "text": text,
+            "already_submitted": bool(estado.get("submitted")),
+            "attempts_used": estado.get("attempts_used"),
+            "attempts_left": restantes,
+            "steps": ["upload", "start_attempt", "submit_attempt"],
+        }
+        if not confirm:
+            return {**plano, "submitted": False,
+                    "preview": True,
+                    "warning": "nada foi enviado; chame de novo com confirm=true para ENVIAR"}
+        if isinstance(restantes, int) and restantes <= 0:
+            raise SubmissionError("nao ha tentativa disponivel nesta atividade")
+
+        escritor = SubmissionWriter(self._session)
+        arquivo = await escritor.upload(caminho)
+        arquivos = submission_files(arquivo)
+        tentativa = await escritor.start_attempt(course_id, str(estado["column_id"]), arquivos)
+        attempt_id = str(tentativa.get("id") or "")
+        if not attempt_id:
+            raise SubmissionError("a tentativa foi criada sem id; nao prossigo para o envio")
+        enviado = await escritor.submit_attempt(course_id, attempt_id, arquivos, text)
+
+        # Confere pelo MESMO leitor que o resto usa — declarar sucesso pela
+        # resposta do POST seria acreditar em quem escreveu, não no estado.
+        depois = await self.submission_status(course_id, content_id)
+        return {
+            **plano,
+            "preview": False,
+            "attempt_id": attempt_id,
+            "status": str(enviado.get("status") or ""),
+            "submitted": bool(depois.get("submitted")),
+            "attempts_left": depois.get("attempts_left"),
+            "files": depois.get("files"),
+        }
+
     async def _gradebook_column_for(self, course_id: str, content_id: str) -> dict[str, Any] | None:
         """Coluna do diário que corresponde a um conteúdo.
 
