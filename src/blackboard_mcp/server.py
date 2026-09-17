@@ -100,6 +100,25 @@ def create_server(profile: str) -> FastMCP:
         return await client.list_course_activities(course_id)
 
     @server.tool()
+    async def list_instructors(course_id: str) -> list[dict]:
+        """Who teaches this course — name and id, for addressing a message.
+        Read-only. The public API is the only one that exposes the role."""
+        return await client.list_instructors(course_id)
+
+    @server.tool()
+    async def list_conversations(course_id: str) -> dict:
+        """Messages tab of a course: conversations newest first, with the text
+        of each message. Read-only — never sends. `can_send` says whether this
+        account could create a conversation here."""
+        return await client.list_conversations(course_id)
+
+    @server.tool()
+    async def read_conversation(course_id: str, conversation_id: str) -> dict:
+        """One conversation with every message, sender and attachment.
+        Read-only."""
+        return await client.read_conversation(course_id, conversation_id)
+
+    @server.tool()
     async def submit_assignment(
         course_id: str, content_id: str, file_path: str, text: str = "", confirm: bool = False
     ) -> dict:

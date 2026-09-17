@@ -844,6 +844,49 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
         return {"captured": len(linhas), "path": str(out_path)}
 
+    async def list_instructors(self, course_id: str) -> list[dict[str, Any]]:
+        """Quem ENSINA a disciplina — nome e id. Só GET.
+
+        Vai pela API PÚBLICA de propósito: a interna (`/memberships`) devolve o
+        papel como `'S'` e sem nome, então não serve para escolher
+        destinatário. Medido em 2026-09-17."""
+        from .conversations import parse_instructors
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        dados = await self._rest_get(
+            f"/learn/api/public/v1/courses/{course_id}/users",
+            {"expand": "user", "limit": "200"},
+        )
+        return parse_instructors(dados)
+
+    async def list_conversations(self, course_id: str) -> dict[str, Any]:
+        """Conversas da aba Mensagens, da mais recente para a mais antiga. Só GET."""
+        from .conversations import can_write, parse_conversations
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        dados = await self._rest_get(f"/learn/api/v1/courses/{course_id}/conversations")
+        return {
+            "course_id": course_id,
+            "can_send": can_write(dados),
+            "conversations": parse_conversations(dados, self.settings.base_url),
+        }
+
+    async def read_conversation(self, course_id: str, conversation_id: str) -> dict[str, Any]:
+        """Uma conversa inteira, com o TEXTO de cada mensagem. Só GET."""
+        from .conversations import parse_conversation
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not conversation_id.startswith("_"):
+            raise ValueError("conversation_id invalido")
+        dados = await self._rest_get(
+            f"/learn/api/v1/courses/{course_id}/conversations/{conversation_id}"
+        )
+        conversa = parse_conversation(dados, self.settings.base_url)
+        return conversa or {"id": conversation_id, "course_id": course_id, "messages": []}
+
     async def submit_assignment(
         self, course_id: str, content_id: str, file_path: str, *,
         text: str = "", confirm: bool = False,
