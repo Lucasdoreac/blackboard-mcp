@@ -771,6 +771,53 @@ class BlackboardClient:
 
         return with_activity_url(self.settings.base_url, public_view(await self._assessment_detail(course_id, content_id)))
 
+    async def _gradebook_column_for(self, course_id: str, content_id: str) -> dict[str, Any] | None:
+        """Coluna do diário que corresponde a um conteúdo.
+
+        Pela LISTA de colunas, casando `contentId` — não pelo
+        `resource/x-bb-asmt-test-link` do item, que só existe em PROVA. Foi por
+        isso que a Atividade 09, um `Assignment`, não resolvia coluna nenhuma
+        pelo caminho do `read_open_attempt` (medido 2026-09-16).
+        """
+        listagem = await self._rest_get(f"/learn/api/v1/courses/{course_id}/gradebook/columns")
+        for coluna in (listagem.get("results") or []) if isinstance(listagem, dict) else []:
+            if isinstance(coluna, dict) and str(coluna.get("contentId") or "") == content_id:
+                return coluna
+        return None
+
+    async def submission_status(self, course_id: str, content_id: str) -> dict[str, Any]:
+        """Estado de entrega de uma atividade — só GET, nunca abre tentativa."""
+        from .submission_state import parse_submission_state
+
+        if not course_id.startswith("_") or not course_id.endswith("_1"):
+            raise ValueError("course_id invalido")
+        if not content_id.startswith("_") or not content_id.endswith("_1"):
+            raise ValueError("content_id invalido")
+
+        detalhe = await self._assessment_detail(course_id, content_id)
+        base = {
+            "course_id": course_id,
+            "content_id": content_id,
+            "title": str(detalhe.get("title") or ""),
+            "due_at": detalhe.get("due_at"),
+            "column_id": "",
+            "known": False,
+        }
+        coluna = await self._gradebook_column_for(course_id, content_id)
+        if coluna is None:
+            # Sem coluna não há como saber, e ADIVINHAR "não entregue" seria o
+            # pior resultado possível: o dono relaxaria achando que o sistema
+            # confirmou. `known=False` diz que a pergunta ficou sem resposta.
+            return base
+        permitidas = detalhe.get("attempts_allowed")
+        tentativas = await self._rest_get(
+            f"/learn/api/v1/courses/{course_id}/gradebook/columns/{coluna['id']}/attempts"
+        )
+        estado = parse_submission_state(
+            tentativas, attempts_allowed=permitidas if isinstance(permitidas, int) else None
+        )
+        return {**base, "column_id": str(coluna.get("id") or ""), "known": True, **estado}
+
     async def read_open_attempt(self, course_id: str, content_id: str) -> dict[str, Any]:
         """Questões e alternativas da tentativa JÁ ABERTA (`IN_PROGRESS`) de uma
         avaliação — só GET. Nunca cria tentativa: sem tentativa aberta devolve
