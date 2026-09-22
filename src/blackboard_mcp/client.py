@@ -108,6 +108,10 @@ class BlackboardClient:
         self.settings = settings
         self._session = BlackboardSession(settings.base_url, settings.data_home, settings.profile)
         self._reauth_lock = asyncio.Lock()
+        # A bridge may attach to a Chrome the owner already had open. It must
+        # never close that browser. This flag is set only after THIS client
+        # starts the dedicated recovery profile itself.
+        self._owns_recovery_browser = False
 
     async def _context(
         self, *, headless: bool, extra_args: list[str] | None = None
@@ -223,6 +227,11 @@ class BlackboardClient:
                             await self._adopt_verified_session(await context.cookies(self.settings.base_url))
                             if opened_page is not None:
                                 await opened_page.close()
+                            if self._owns_recovery_browser:
+                                try:
+                                    await browser.close()
+                                finally:
+                                    self._owns_recovery_browser = False
                             return {"authenticated": True, "profile": self.settings.profile, "session_saved": True}
                         except SessionStale:
                             # A aba pode estar em /ultra por instantes antes do
@@ -288,6 +297,7 @@ class BlackboardClient:
             )
         except OSError:
             return {"opened": False, "profile": self.settings.profile, "reason": "browser_launch_failed"}
+        self._owns_recovery_browser = True
         return {
             "opened": True,
             "profile": self.settings.profile,

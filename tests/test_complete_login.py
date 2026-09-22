@@ -156,3 +156,21 @@ async def test_automatic_mode_opens_one_login_tab_and_closes_it_after_success(
     context.new_page.assert_awaited_once()
     new_page.goto.assert_awaited_once()
     new_page.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_login_closes_only_the_recovery_browser_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(tmp_path)
+    client._owns_recovery_browser = True
+    playwright = _fake_playwright(monkeypatch, [[ULTRA]])
+    playwright.chromium.connect_over_cdp.return_value.close = AsyncMock()
+
+    async def fake_get(self, path, params=None, *, _retry_after_reload=True):
+        return {"id": "me"}
+
+    monkeypatch.setattr(client_mod.BlackboardSession, "get", fake_get)
+    result = await client.complete_login(timeout_s=5, interval_s=0)
+
+    assert result["authenticated"] is True
+    playwright.chromium.connect_over_cdp.return_value.close.assert_awaited_once()
+    assert client._owns_recovery_browser is False
