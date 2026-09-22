@@ -23,6 +23,18 @@ from .session import BlackboardRequestRejected, BlackboardSession, SessionStale
 AUTO_REAUTH_TIMEOUT_S = 75.0
 RECOVERY_BROWSER_START_TIMEOUT_S = 10.0
 
+# Fluxo SSO medido no portal Cruzeiro: não envia credencial, OTP ou cookie.
+# Ele apenas aciona as transições públicas que o próprio aluno acabou de usar;
+# o cookie só é aceito depois da prova REST em `_adopt_verified_session`.
+_CRUZEIRO_BB_HOST = "bb.cruzeirodosulvirtual.com.br"
+_CRUZEIRO_PORTAL_HOST = "novoportal.cruzeirodosul.edu.br"
+_CRUZEIRO_SSO_ACTIONS = (
+    (_CRUZEIRO_BB_HOST, "link", "Login Alunos"),
+    (_CRUZEIRO_PORTAL_HOST, "button", "Ensino superior"),
+    (_CRUZEIRO_PORTAL_HOST, "button", "Continuar"),
+    (_CRUZEIRO_PORTAL_HOST, "link", "Acessar Ambiente Virtual"),
+)
+
 
 class AuthenticationRequired(RuntimeError):
     """No valid Blackboard session is available in the local profile."""
@@ -112,6 +124,33 @@ class BlackboardClient:
         # never close that browser. This flag is set only after THIS client
         # starts the dedicated recovery profile itself.
         self._owns_recovery_browser = False
+        self._sso_actions_clicked: set[tuple[str, str, str]] = set()
+
+    async def _advance_configured_sso(self, pages: list[Any]) -> bool:
+        """Advance the known Cruzeiro SSO screens when its session is remembered.
+
+        Other institutions remain manual/generic. This adapter is deliberately
+        limited to its configured Blackboard host and to named visible controls;
+        it cannot type secrets or submit an unknown form.
+        """
+        if urlparse(self.settings.base_url).netloc != _CRUZEIRO_BB_HOST:
+            return False
+        for page in pages:
+            host = urlparse(str(getattr(page, "url", ""))).netloc
+            for expected_host, role, name in _CRUZEIRO_SSO_ACTIONS:
+                key = (expected_host, role, name)
+                if host != expected_host or key in self._sso_actions_clicked:
+                    continue
+                try:
+                    control = page.get_by_role(role, name=name, exact=True)
+                    if not await control.count():
+                        continue
+                    await control.click(timeout=3_000)
+                except Exception:
+                    continue
+                self._sso_actions_clicked.add(key)
+                return True
+        return False
 
     async def _context(
         self, *, headless: bool, extra_args: list[str] | None = None
@@ -212,7 +251,9 @@ class BlackboardClient:
                         browser = None
                 if browser is not None and browser.contexts:
                     context = browser.contexts[0]
-                    stage, host = login_stage([page.url for page in context.pages], self.settings.base_url)
+                    pages = list(context.pages)
+                    await self._advance_configured_sso(pages)
+                    stage, host = login_stage([page.url for page in pages], self.settings.base_url)
                     if open_login_tab and opened_page is None and stage != "blackboard":
                         # Reautenticação automática: sem aba no Ultra, abre UMA
                         # aba nova no login (o SSO que lembra o perfil conclui

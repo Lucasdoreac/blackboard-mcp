@@ -42,6 +42,29 @@ def test_stage_on_the_blackboard_host_outside_ultra_is_still_waiting() -> None:
     assert login_stage([f"{BASE}/?new_loc=%2Fultra%2Fcourse", "about:blank"], BASE) == ("waiting", None)
 
 
+@pytest.mark.asyncio
+async def test_cruzeiro_adapter_clicks_only_the_known_portal_transition(tmp_path: Path) -> None:
+    client = BlackboardClient(Settings(profile="sober", base_url="https://bb.cruzeirodosulvirtual.com.br", data_home=tmp_path))
+    control = AsyncMock()
+    control.count.return_value = 1
+    missing = AsyncMock()
+    missing.count.return_value = 0
+    page = MagicMock(url="https://novoportal.cruzeirodosul.edu.br/gfa/home")
+    page.get_by_role.side_effect = lambda role, *, name, exact: control if (role, name, exact) == ("link", "Acessar Ambiente Virtual", True) else missing
+
+    assert await client._advance_configured_sso([page]) is True
+    control.click.assert_awaited_once_with(timeout=3_000)
+
+
+@pytest.mark.asyncio
+async def test_generic_profiles_do_not_click_portal_controls(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    page = MagicMock(url=PORTAL)
+
+    assert await client._advance_configured_sso([page]) is False
+    page.get_by_role.assert_not_called()
+
+
 def _client(tmp_path: Path) -> BlackboardClient:
     return BlackboardClient(Settings(profile="sober", base_url=BASE, data_home=tmp_path))
 
