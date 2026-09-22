@@ -17,7 +17,8 @@ ExecStart=%h/.local/bin/uv --directory %h/blackboard-mcp run blackboard-mcp serv
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
-PrivateTmp=yes
+# Chrome usa um socket temporário para coordenar o perfil persistente; isolar
+# /tmp aqui faz o processo filho encerrar antes de expor a porta CDP.
 UMask=0077
 
 [Install]
