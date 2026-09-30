@@ -54,4 +54,17 @@ def clean_document_body(raw_text: str | None, display_html: str | None) -> str |
     return text if len(text) >= _MIN_CHARS else None
 
 
-__all__ = ["clean_document_body"]
+_NON_CONTENT_RE = re.compile(r"(?is)<(script|style|head|noscript|svg)\b.*?</\1>")
+_MAX_EMBEDDED_CHARS = 500_000
+
+
+def clean_embedded_html(page_html: str) -> str | None:
+    """Plain text of a professor-uploaded HTML file embedded in a document page
+    (`embedded-unsafe-html`). Real incident (2026-09-29): an activity brief
+    published ONLY as such a file — the page's own body has no text — so the
+    course looked empty. Scripts/styles/head are dropped before the usual
+    cleaning; the input is capped so a huge file cannot balloon a source."""
+    return clean_document_body(None, _NON_CONTENT_RE.sub(" ", page_html[:_MAX_EMBEDDED_CHARS]))
+
+
+__all__ = ["clean_document_body", "clean_embedded_html"]

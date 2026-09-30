@@ -1245,15 +1245,19 @@ class BlackboardClient:
         return results
 
     async def list_course_documents(self, course_id: str) -> list[dict[str, str]]:
-        """Plain text of every `resource/x-bb-document` page body in a course
-        — the professor's own lecture notes / unit intro / instructions,
-        written straight into the page. Reads only the body text the content
-        API returns; never fetches a URL or opens an embed. Pages with too
-        little text (or none) are skipped, not errors."""
-        from .document_text import clean_document_body
+        """Plain text of every `resource/x-bb-document` page in a course — the
+        professor's own lecture notes / unit intro / instructions. Reads the
+        body text the content API returns; when the body has no text of its
+        own, follows any SAME-HOST `embedded-unsafe-html` file it references
+        (cookies never leave the Blackboard host; mirrors
+        `list_video_descriptions`) and reads that file's text instead. Never
+        opens a third-party embed. Pages with too little text are skipped."""
+        from .document_text import clean_document_body, clean_embedded_html
+        from .video_descriptions import find_embedded_html_urls
 
         if not course_id.startswith("_") or not course_id.endswith("_1"):
             raise ValueError("course_id invalido")
+        expected_host = (urlparse(self.settings.base_url).hostname or "").lower()
         results: list[dict[str, str]] = []
         for row in await self.list_course_tree(course_id):
             if row.get("content_handler") != "resource/x-bb-document":
@@ -1267,6 +1271,20 @@ class BlackboardClient:
                 body.get("rawText"),
                 body.get("displayText") or body.get("html"),
             )
+            if text is None:
+                for url in find_embedded_html_urls(str(body.get("rawText") or body.get("displayText") or "")):
+                    parsed = urlparse(url)
+                    if parsed.scheme != "https" or (parsed.hostname or "").lower() != expected_host:
+                        continue
+                    async with httpx.AsyncClient(
+                        cookies=self._session._cookies, follow_redirects=False, timeout=20.0
+                    ) as hc:
+                        response = await hc.get(url)
+                    if response.status_code >= 400:
+                        continue
+                    text = clean_embedded_html(response.text)
+                    if text is not None:
+                        break
             if text is None:
                 continue
             results.append({
