@@ -21,6 +21,19 @@ from .session import BlackboardRequestRejected, BlackboardSession, SessionStale
 
 # Cabe dentro do timeout de 90s que o watchdog do SOBER dá à bridge (auth_status).
 AUTO_REAUTH_TIMEOUT_S = 75.0
+RECOVERY_BROWSER_START_TIMEOUT_S = 10.0
+
+# Fluxo SSO medido no portal Cruzeiro: não envia credencial, OTP ou cookie.
+# Ele apenas aciona as transições públicas que o próprio aluno acabou de usar;
+# o cookie só é aceito depois da prova REST em `_adopt_verified_session`.
+_CRUZEIRO_BB_HOST = "bb.cruzeirodosulvirtual.com.br"
+_CRUZEIRO_PORTAL_HOST = "novoportal.cruzeirodosul.edu.br"
+_CRUZEIRO_SSO_ACTIONS = (
+    (_CRUZEIRO_BB_HOST, "link", "Login Alunos"),
+    (_CRUZEIRO_PORTAL_HOST, "button", "Ensino superior"),
+    (_CRUZEIRO_PORTAL_HOST, "button", "Continuar"),
+    (_CRUZEIRO_PORTAL_HOST, "link", "Acessar Ambiente Virtual"),
+)
 
 
 class AuthenticationRequired(RuntimeError):
@@ -107,6 +120,37 @@ class BlackboardClient:
         self.settings = settings
         self._session = BlackboardSession(settings.base_url, settings.data_home, settings.profile)
         self._reauth_lock = asyncio.Lock()
+        # A bridge may attach to a Chrome the owner already had open. It must
+        # never close that browser. This flag is set only after THIS client
+        # starts the dedicated recovery profile itself.
+        self._owns_recovery_browser = False
+        self._sso_actions_clicked: set[tuple[str, str, str]] = set()
+
+    async def _advance_configured_sso(self, pages: list[Any]) -> bool:
+        """Advance the known Cruzeiro SSO screens when its session is remembered.
+
+        Other institutions remain manual/generic. This adapter is deliberately
+        limited to its configured Blackboard host and to named visible controls;
+        it cannot type secrets or submit an unknown form.
+        """
+        if urlparse(self.settings.base_url).netloc != _CRUZEIRO_BB_HOST:
+            return False
+        for page in pages:
+            host = urlparse(str(getattr(page, "url", ""))).netloc
+            for expected_host, role, name in _CRUZEIRO_SSO_ACTIONS:
+                key = (expected_host, role, name)
+                if host != expected_host or key in self._sso_actions_clicked:
+                    continue
+                try:
+                    control = page.get_by_role(role, name=name, exact=True)
+                    if not await control.count():
+                        continue
+                    await control.click(timeout=3_000)
+                except Exception:
+                    continue
+                self._sso_actions_clicked.add(key)
+                return True
+        return False
 
     async def _context(
         self, *, headless: bool, extra_args: list[str] | None = None
@@ -207,7 +251,9 @@ class BlackboardClient:
                         browser = None
                 if browser is not None and browser.contexts:
                     context = browser.contexts[0]
-                    stage, host = login_stage([page.url for page in context.pages], self.settings.base_url)
+                    pages = list(context.pages)
+                    await self._advance_configured_sso(pages)
+                    stage, host = login_stage([page.url for page in pages], self.settings.base_url)
                     if open_login_tab and opened_page is None and stage != "blackboard":
                         # Reautenticação automática: sem aba no Ultra, abre UMA
                         # aba nova no login (o SSO que lembra o perfil conclui
@@ -222,6 +268,11 @@ class BlackboardClient:
                             await self._adopt_verified_session(await context.cookies(self.settings.base_url))
                             if opened_page is not None:
                                 await opened_page.close()
+                            if self._owns_recovery_browser:
+                                try:
+                                    await browser.close()
+                                finally:
+                                    self._owns_recovery_browser = False
                             return {"authenticated": True, "profile": self.settings.profile, "session_saved": True}
                         except SessionStale:
                             # A aba pode estar em /ultra por instantes antes do
@@ -271,24 +322,43 @@ class BlackboardClient:
     def open_login_window(self) -> dict[str, str | bool]:
         """Open the owner-visible, CDP-enabled browser used for manual reauth."""
         prepare_profile(self.settings.profile_dir)
-        subprocess.Popen(
-            [
-                self.settings.chrome_path,
-                f"--user-data-dir={self.settings.profile_dir}",
-                f"--remote-debugging-port={self.settings.debug_port}",
-                "--remote-debugging-address=127.0.0.1",
-                "--new-window",
-                self.login_url(),
-            ],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            subprocess.Popen(
+                [
+                    self.settings.chrome_path,
+                    f"--user-data-dir={self.settings.profile_dir}",
+                    f"--remote-debugging-port={self.settings.debug_port}",
+                    "--remote-debugging-address=127.0.0.1",
+                    "--new-window",
+                    self.login_url(),
+                ],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return {"opened": False, "profile": self.settings.profile, "reason": "browser_launch_failed"}
+        self._owns_recovery_browser = True
         return {
             "opened": True,
             "profile": self.settings.profile,
             "next_step": "conclua o login no Chrome e use auth_status",
         }
+
+    async def _wait_for_recovery_browser(self, timeout_s: float = RECOVERY_BROWSER_START_TIMEOUT_S) -> bool:
+        """Wait briefly for the dedicated profile's CDP endpoint to be usable.
+
+        `Popen` only proves the launcher accepted the request. The Chrome
+        process can still exit immediately because of a bad display, profile
+        lock, or sandbox failure. Reauthentication must report that concrete
+        state instead of timing out as if the owner had ignored an MFA prompt.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while asyncio.get_running_loop().time() < deadline:
+            if await asyncio.to_thread(self._cdp_available):
+                return True
+            await asyncio.sleep(0.25)
+        return False
 
     async def _authenticated_page(self) -> tuple[Any, BrowserContext, Page, bool]:
         playwright, context, attached = await self._context(headless=True)
@@ -331,7 +401,25 @@ class BlackboardClient:
             except (SessionStale, BlackboardRequestRejected):
                 pass
             if not await asyncio.to_thread(self._cdp_available):
-                self.open_login_window()
+                launched = self.open_login_window()
+                # O retorno estruturado é o contrato real. O `isinstance`
+                # preserva substitutos antigos de testes/integradores que
+                # só observavam a chamada de abertura, antes deste estado
+                # existir.
+                if isinstance(launched, dict) and not launched.get("opened"):
+                    return {
+                        "authenticated": False,
+                        "profile": self.settings.profile,
+                        "needs_owner": True,
+                        "reason": "browser_launch_failed",
+                    }
+                if isinstance(launched, dict) and not await self._wait_for_recovery_browser():
+                    return {
+                        "authenticated": False,
+                        "profile": self.settings.profile,
+                        "needs_owner": True,
+                        "reason": "recovery_browser_unavailable",
+                    }
             result = await self.complete_login(timeout_s=timeout_s, open_login_tab=True)
             if result.get("authenticated"):
                 return {**result, "recovered": "browser_sso"}
