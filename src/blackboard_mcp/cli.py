@@ -130,10 +130,7 @@ def main() -> None:
         impedimento = display_hint()
         if impedimento:
             raise SystemExit(f"{args.command}: {impedimento}")
-        from pathlib import Path
 
-        from .client import BlackboardClient
-        from .config import Settings
 
         destino = Path(args.out or f"captura-{args.profile}.jsonl")
         cliente = BlackboardClient(Settings.from_profile(args.profile))
