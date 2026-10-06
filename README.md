@@ -249,6 +249,9 @@ cd ~/blackboard-mcp && git pull
   Nada é escrito no Blackboard.
 - Os materiais baixados ficam no seu computador; o que o assistente faz com as
   respostas depende do assistente que você usa.
+- **Use só com a sua própria conta**, dentro das regras da sua instituição. O
+  Blackboard MCP não contorna login, verificação em duas etapas nem permissão:
+  ele vê exatamente o que você veria no navegador.
 - `serve` (stdio) é o modo recomendado para assistentes locais. `serve-http`
   existe apenas para uma bridge local por socket Unix autenticado; ele não deve
   ser exposto na rede.
@@ -259,6 +262,10 @@ cd ~/blackboard-mcp && git pull
 - [Segurança](SECURITY.md) — escopo, sessões e relato de vulnerabilidades.
 - [Contribuição](CONTRIBUTING.md) — ambiente, testes e regras de compatibilidade.
 - [Integração opcional com Sober](docs/SOBER.md) — não é requisito do MCP.
+
+## Licença
+
+[MIT](LICENSE). Use, modifique e redistribua; mantenha o aviso de copyright.
 
 ## Para quem vai programar
 
