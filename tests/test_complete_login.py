@@ -182,6 +182,21 @@ async def test_automatic_mode_opens_one_login_tab_and_closes_it_after_success(
 
 
 @pytest.mark.asyncio
+async def test_automatic_mode_reuses_existing_sso_page_instead_of_opening_another_tab(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+    playwright = _fake_playwright(monkeypatch, [[PORTAL]] * 100)
+    context = playwright.chromium.connect_over_cdp.return_value.contexts[0]
+    context.new_page = AsyncMock()
+
+    result = await client.complete_login(timeout_s=0.02, interval_s=0.001, open_login_tab=True)
+
+    assert result == {"authenticated": False, "profile": "sober", "reason": "login_timeout"}
+    context.new_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_login_closes_only_the_recovery_browser_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(tmp_path)
     client._owns_recovery_browser = True

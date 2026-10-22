@@ -144,3 +144,34 @@ async def test_concurrent_reauthentications_run_one_at_a_time(tmp_path: Path, mo
     monkeypatch.setattr(client, "complete_login", slow_login)
     await asyncio.gather(client.reauthenticate(), client.reauthenticate())
     assert running["max"] == 1
+
+
+@pytest.mark.asyncio
+async def test_independent_clients_share_one_profile_reauthentication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Revert-check: separate MCP processes must not start parallel browser recoveries."""
+    first, second = _client(tmp_path), _client(tmp_path)
+    opened = MagicMock(return_value={"opened": True})
+    for client in (first, second):
+        monkeypatch.setattr(client._session, "get", AsyncMock(side_effect=SessionStale("401")))
+        monkeypatch.setattr(client, "_cdp_available", lambda: False)
+        monkeypatch.setattr(client, "open_login_window", opened)
+        monkeypatch.setattr(client, "_wait_for_recovery_browser", AsyncMock(return_value=True))
+
+    active = {"now": 0, "max": 0}
+
+    async def slow_login(**kwargs):
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        await asyncio.sleep(0.05)
+        active["now"] -= 1
+        return {"authenticated": False, "reason": "login_timeout"}
+
+    monkeypatch.setattr(first, "complete_login", slow_login)
+    monkeypatch.setattr(second, "complete_login", slow_login)
+    results = await asyncio.gather(first.reauthenticate(), second.reauthenticate())
+
+    assert active["max"] == 1
+    assert sum(result.get("reason") == "reauthentication_in_progress" for result in results) == 1
+    opened.assert_called_once()
