@@ -99,6 +99,22 @@ async def test_failed_automatic_login_tells_the_owner_command(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
+async def test_auth_status_is_read_only_when_the_saved_session_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Revert-check: a stale auth probe must not reopen Chrome on every watchdog poll."""
+    client = _client(tmp_path)
+    monkeypatch.setattr(client._session, "get", AsyncMock(side_effect=SessionStale("401")))
+    reauth = AsyncMock(return_value={"authenticated": False})
+    monkeypatch.setattr(client, "reauthenticate", reauth)
+
+    result = await client.auth_status()
+
+    assert result == {"authenticated": False, "profile": "sober", "reason": "SessionStale"}
+    reauth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reauthenticate_opens_the_window_only_when_chrome_is_down_and_waits_with_a_login_tab(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

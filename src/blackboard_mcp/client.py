@@ -476,9 +476,17 @@ class BlackboardClient:
                 raise AuthenticationRequired("a sessao Blackboard expirou; refaca o login") from exc
 
     async def auth_status(self) -> dict[str, Any]:
+        """Report session validity without triggering browser recovery.
+
+        Watchdogs poll this tool to observe whether an owner completed SSO.
+        Making the probe call ``_rest_get`` caused every poll to enter
+        ``reauthenticate`` on a stale cookie, which could repeatedly launch
+        visible Chrome windows. Actual Blackboard operations retain the
+        automatic recovery path in ``_rest_get``.
+        """
         try:
-            await self._rest_get("/learn/api/v1/users/me")
-        except (AuthenticationRequired, SessionStale) as exc:
+            await self._session.get("/learn/api/v1/users/me", _retry_after_reload=False)
+        except (SessionStale, BlackboardRequestRejected) as exc:
             return {"authenticated": False, "profile": self.settings.profile, "reason": type(exc).__name__}
         return {"authenticated": True, "profile": self.settings.profile}
 
