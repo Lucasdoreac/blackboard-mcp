@@ -32,7 +32,8 @@ if ! [[ "$profile" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$ ]]; then
   echo "login-remote: perfil invalido: $profile" >&2
   exit 2
 fi
-if ! [[ "$host" =~ ^[a-zA-Z0-9._@-]+$ ]]; then
+# Começa com letra ou dígito: um host "-F..."/"-o..." viraria opção do ssh.
+if ! [[ "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._@-]*$ ]]; then
   echo "login-remote: host invalido: $host" >&2
   exit 2
 fi

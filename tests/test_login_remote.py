@@ -53,3 +53,11 @@ def test_login_remote_rejects_a_profile_that_could_inject_a_remote_command(tmp_p
 
     assert result.returncode == 2
     assert not (tmp_path / "ubuntu/pwned").exists()
+
+
+def test_login_remote_rejects_a_host_that_ssh_would_read_as_an_option(tmp_path: Path) -> None:
+    # Revert-check: with the old pattern ^[a-zA-Z0-9._@-]+$ "-Fconfig" passes and reaches ssh as an option.
+    result = _run(tmp_path, "--skip-login", "--host", "-Fconfig")
+
+    assert result.returncode == 2
+    assert "host invalido" in result.stderr
