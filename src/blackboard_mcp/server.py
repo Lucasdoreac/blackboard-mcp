@@ -6,8 +6,8 @@ from .client import BlackboardClient
 from .config import Settings
 
 
-def create_server(profile: str) -> FastMCP:
-    client = BlackboardClient(Settings.from_profile(profile))
+def create_server(profile: str, client: BlackboardClient | None = None) -> FastMCP:
+    client = client or BlackboardClient(Settings.from_profile(profile))
     server = FastMCP("blackboard-mcp")
 
     @server.tool()

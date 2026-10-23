@@ -475,6 +475,11 @@ class BlackboardClient:
             except SessionStale as exc:
                 raise AuthenticationRequired("a sessao Blackboard expirou; refaca o login") from exc
 
+    @property
+    def session(self) -> BlackboardSession:
+        """A sessão deste cliente — a bridge entrega a MESMA ao keep-alive."""
+        return self._session
+
     async def auth_status(self) -> dict[str, Any]:
         """Report session validity without triggering browser recovery.
 
@@ -483,12 +488,30 @@ class BlackboardClient:
         ``reauthenticate`` on a stale cookie, which could repeatedly launch
         visible Chrome windows. Actual Blackboard operations retain the
         automatic recovery path in ``_rest_get``.
+
+        Reler ``session.json`` sob rejeição continua permitido: é só disco, sem
+        browser. Com ``_retry_after_reload=False`` (2026-10-22) a bridge seguia
+        dando 401 com um login novo já copiado para o disco até um restart.
+        Os campos de keep-alive deixam o SOBER avisar o dono ANTES de vencer.
         """
         try:
-            await self._session.get("/learn/api/v1/users/me", _retry_after_reload=False)
+            await self._session.get("/learn/api/v1/users/me")
         except (SessionStale, BlackboardRequestRejected) as exc:
-            return {"authenticated": False, "profile": self.settings.profile, "reason": type(exc).__name__}
-        return {"authenticated": True, "profile": self.settings.profile}
+            status = {"authenticated": False, "profile": self.settings.profile, "reason": type(exc).__name__}
+        else:
+            status = {"authenticated": True, "profile": self.settings.profile}
+        return {**status, **self._keepalive_status()}
+
+    def _keepalive_status(self) -> dict[str, Any]:
+        """Lido DEPOIS da chamada: uma rotação ou recarga muda `expires_at`."""
+        health = self._session.keepalive
+        return {
+            "expires_at": self._session.expires_at,
+            "last_keepalive_ok_at": health.last_ok_at,
+            "keepalive_failing": self._session.keepalive_failing(),
+            "keepalive_consecutive_failures": health.consecutive_failures,
+            "last_keepalive_failure_class": health.last_failure_class,
+        }
 
     async def list_terms(self) -> list[str]:
         """List the terms exposed by the Ultra course filter without selecting one."""

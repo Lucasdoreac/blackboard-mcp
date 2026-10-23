@@ -149,10 +149,12 @@ def main() -> None:
         if not key:
             raise SystemExit(f"serve-http requer a variavel {args.bridge_key_env}")
         from .bridge import serve_unix_socket
-        from .session import BlackboardSession
-        settings = Settings.from_profile(args.profile)
-        session = BlackboardSession(settings.base_url, settings.data_home, settings.profile)
-        asyncio.run(serve_unix_socket(create_server(args.profile), Path(args.socket), key, session=session))
+        # Uma sessão só: o keep-alive e as tools (auth_status) leem o mesmo
+        # jar e o mesmo estado de saúde. Com dois objetos, a recarga de disco
+        # feita por um não curava o outro.
+        client = BlackboardClient(Settings.from_profile(args.profile))
+        asyncio.run(serve_unix_socket(create_server(args.profile, client), Path(args.socket), key,
+                                      session=client.session))
         return
     client = BlackboardClient(Settings.from_profile(args.profile))
     try:

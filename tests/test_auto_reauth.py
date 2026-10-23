@@ -110,7 +110,8 @@ async def test_auth_status_is_read_only_when_the_saved_session_is_stale(
 
     result = await client.auth_status()
 
-    assert result == {"authenticated": False, "profile": "sober", "reason": "SessionStale"}
+    assert result["authenticated"] is False
+    assert result["reason"] == "SessionStale"
     reauth.assert_not_awaited()
 
 
