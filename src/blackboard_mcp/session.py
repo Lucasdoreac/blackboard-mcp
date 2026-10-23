@@ -13,7 +13,7 @@ carries `timeout:28800` (8h) and `expires:<unix ts> = login-time + timeout`:
 an INACTIVITY window, not an absolute cap. Blackboard's own keep-alive
 endpoint (`timeUntilBbSessionInactive`) rotates `BbRouter` with a fresh
 `expires` on every call — a periodic ping via this same session (see
-`keepalive.py`) keeps the session alive indefinitely without ever opening a
+`bridge.py`) keeps the session alive indefinitely without ever opening a
 browser again.
 
 A sessão é carregada do disco no `__init__` e RECARREGADA sob rejeição
@@ -27,10 +27,15 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+# Idade máxima de sessão que o keep-alive considera "perto de vencer" quando os
+# pings estão falhando: dá ao dono tempo de logar antes da janela de 8 h fechar.
+EXPIRY_WARNING_S = 2 * 3600
 
 
 class SessionStale(RuntimeError):
@@ -55,19 +60,50 @@ class BlackboardRequestRejected(RuntimeError):
 _HEALTH_PATH = "/learn/api/v1/users/me"
 
 
+@dataclass
+class KeepaliveHealth:
+    """Estado observável do keep-alive, compartilhado com `auth_status`.
+
+    Até 2026-10-23 o keep-alive engolia toda falha em silêncio: o cookie venceu
+    em 2026-10-20 depois de 8 h sem nenhum ping bem-sucedido e ninguém soube
+    antes. Nada aqui guarda valor de cookie — só horários e a classe da falha.
+    """
+
+    last_ok_at: float | None = None
+    last_failure_at: float | None = None
+    last_failure_class: str | None = None
+    consecutive_failures: int = 0
+
+
 def session_path(data_home: Path, profile: str) -> Path:
     return data_home / "profiles" / profile / "session.json"
 
 
-def extract_xsrf(bbrouter_value: str) -> str | None:
-    """Parse the `xsrf:<uuid>` field out of the BbRouter cookie's comma-joined value."""
+def _bbrouter_field(bbrouter_value: str, name: str) -> str | None:
     for part in bbrouter_value.split(","):
         if ":" not in part:
             continue
         key, _, value = part.partition(":")
-        if key == "xsrf":
+        if key == name:
             return value
     return None
+
+
+def extract_xsrf(bbrouter_value: str) -> str | None:
+    """Parse the `xsrf:<uuid>` field out of the BbRouter cookie's comma-joined value."""
+    return _bbrouter_field(bbrouter_value, "xsrf")
+
+
+def extract_expires(bbrouter_value: str) -> float | None:
+    """`expires:<unix ts>` do BbRouter em segundos (aceita milissegundos)."""
+    raw = _bbrouter_field(bbrouter_value, "expires")
+    try:
+        value = float(raw) if raw is not None else None
+    except ValueError:
+        return None
+    if value is None or value <= 0:
+        return None
+    return value / 1000 if value > 1e12 else value
 
 
 class BlackboardSession:
@@ -78,6 +114,7 @@ class BlackboardSession:
         self._path = session_path(data_home, profile)
         self._cookies: dict[str, str] = {}
         self._xsrf: str | None = None
+        self.keepalive = KeepaliveHealth()
         self._load()
 
     def _load(self) -> None:
@@ -100,6 +137,19 @@ class BlackboardSession:
     @property
     def configured(self) -> bool:
         return bool(self._cookies.get("BbRouter") and self._xsrf)
+
+    @property
+    def expires_at(self) -> float | None:
+        """Fim da janela de inatividade do cookie atual (unix ts), se conhecido."""
+        bbrouter = self._cookies.get("BbRouter")
+        return extract_expires(bbrouter) if bbrouter else None
+
+    def keepalive_failing(self, now: float | None = None) -> bool:
+        """Pings falhando E menos de 2 h de sessão: hora de chamar o dono."""
+        expires_at = self.expires_at
+        if self.keepalive.consecutive_failures == 0 or expires_at is None:
+            return False
+        return expires_at - (time.time() if now is None else now) < EXPIRY_WARNING_S
 
     def adopt(self, cookies: list[dict[str, Any]]) -> None:
         """Replace the stored cookie jar from a fresh Playwright extraction."""
@@ -176,8 +226,12 @@ class BlackboardSession:
                 await asyncio.sleep(1.5 * (attempt + 1))
         else:
             raise last_error  # pragma: no cover — loop always breaks or raises above
-        self._absorb_rotated_cookies(response)
         content_type = response.headers.get("content-type", "")
+        if response.status_code < 400:
+            # Só resposta aceita rotaciona o jar: persistir Set-Cookie de uma
+            # resposta recusada gravaria o jar velho por cima de um
+            # session.json novo trazido de fora, antes da recarga abaixo.
+            self._absorb_rotated_cookies(response)
         if response.status_code >= 400:
             # Antes de declarar a sessão morta, relê o disco: pode haver login
             # NOVO feito por fora enquanto este processo seguia com o cookie
@@ -221,4 +275,7 @@ class BlackboardSession:
             self._save()
 
 
-__all__ = ["BlackboardRequestRejected", "BlackboardSession", "SessionStale", "extract_xsrf", "session_path"]
+__all__ = [
+    "BlackboardRequestRejected", "BlackboardSession", "EXPIRY_WARNING_S", "KeepaliveHealth", "SessionStale",
+    "extract_expires", "extract_xsrf", "session_path",
+]

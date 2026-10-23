@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import subprocess
@@ -254,10 +255,11 @@ class BlackboardClient:
                     pages = list(context.pages)
                     await self._advance_configured_sso(pages)
                     stage, host = login_stage([page.url for page in pages], self.settings.base_url)
-                    if open_login_tab and opened_page is None and stage != "blackboard":
+                    if open_login_tab and opened_page is None and stage == "waiting":
                         # Reautenticação automática: sem aba no Ultra, abre UMA
-                        # aba nova no login (o SSO que lembra o perfil conclui
-                        # sozinho). Nunca navega aba existente do dono.
+                        # aba nova no login. Se o SSO já redirecionou para outro
+                        # host, essa aba existente já é o fluxo do login: não
+                        # abrir outra. Nunca navega aba existente do dono.
                         opened_page = await context.new_page()
                         try:
                             await opened_page.goto(self.login_url(), wait_until="commit", timeout=30_000)
@@ -395,36 +397,58 @@ class BlackboardClient:
         SSO pedir MFA, devolve `needs_owner=True` e a janela fica aberta para o
         dono concluir. Serializado: chamadas simultâneas esperam a mesma."""
         async with self._reauth_lock:
+            lock_path = self.settings.data_home / "profiles" / self.settings.profile / "reauth.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
-                await self._session.get("/learn/api/v1/users/me", _retry_after_reload=True)
-                return {"authenticated": True, "profile": self.settings.profile, "recovered": "already_valid"}
-            except (SessionStale, BlackboardRequestRejected):
-                pass
-            if not await asyncio.to_thread(self._cdp_available):
-                launched = self.open_login_window()
-                # O retorno estruturado é o contrato real. O `isinstance`
-                # preserva substitutos antigos de testes/integradores que
-                # só observavam a chamada de abertura, antes deste estado
-                # existir.
-                if isinstance(launched, dict) and not launched.get("opened"):
-                    return {
-                        "authenticated": False,
-                        "profile": self.settings.profile,
-                        "needs_owner": True,
-                        "reason": "browser_launch_failed",
-                    }
-                if isinstance(launched, dict) and not await self._wait_for_recovery_browser():
-                    return {
-                        "authenticated": False,
-                        "profile": self.settings.profile,
-                        "needs_owner": True,
-                        "reason": "recovery_browser_unavailable",
-                    }
-            result = await self.complete_login(timeout_s=timeout_s, open_login_tab=True)
-            if result.get("authenticated"):
-                return {**result, "recovered": "browser_sso"}
-            return {**result, "needs_owner": True,
-                    "owner_action": f"ssh ubuntu e rode: blackboard-mcp login --profile {self.settings.profile}"}
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # Another MCP process owns recovery for this profile. Let
+                    # its browser/login flow finish; this request must not
+                    # start another Chrome or another SSO tab.
+                    try:
+                        await self._session.get("/learn/api/v1/users/me", _retry_after_reload=True)
+                        return {"authenticated": True, "profile": self.settings.profile,
+                                "recovered": "already_valid"}
+                    except (SessionStale, BlackboardRequestRejected):
+                        return {"authenticated": False, "profile": self.settings.profile,
+                                "needs_owner": True, "reason": "reauthentication_in_progress"}
+
+                try:
+                    await self._session.get("/learn/api/v1/users/me", _retry_after_reload=True)
+                    return {"authenticated": True, "profile": self.settings.profile,
+                            "recovered": "already_valid"}
+                except (SessionStale, BlackboardRequestRejected):
+                    pass
+                if not await asyncio.to_thread(self._cdp_available):
+                    launched = self.open_login_window()
+                    # O retorno estruturado é o contrato real. O `isinstance`
+                    # preserva substitutos antigos de testes/integradores que
+                    # só observavam a chamada de abertura, antes deste estado
+                    # existir.
+                    if isinstance(launched, dict) and not launched.get("opened"):
+                        return {
+                            "authenticated": False,
+                            "profile": self.settings.profile,
+                            "needs_owner": True,
+                            "reason": "browser_launch_failed",
+                        }
+                    if isinstance(launched, dict) and not await self._wait_for_recovery_browser():
+                        return {
+                            "authenticated": False,
+                            "profile": self.settings.profile,
+                            "needs_owner": True,
+                            "reason": "recovery_browser_unavailable",
+                        }
+                result = await self.complete_login(timeout_s=timeout_s, open_login_tab=True)
+                if result.get("authenticated"):
+                    return {**result, "recovered": "browser_sso"}
+                return {**result, "needs_owner": True,
+                        "owner_action": f"ssh ubuntu e rode: blackboard-mcp login --profile {self.settings.profile}"}
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
 
     def _cdp_available(self) -> bool:
         try:
@@ -451,12 +475,43 @@ class BlackboardClient:
             except SessionStale as exc:
                 raise AuthenticationRequired("a sessao Blackboard expirou; refaca o login") from exc
 
+    @property
+    def session(self) -> BlackboardSession:
+        """A sessão deste cliente — a bridge entrega a MESMA ao keep-alive."""
+        return self._session
+
     async def auth_status(self) -> dict[str, Any]:
+        """Report session validity without triggering browser recovery.
+
+        Watchdogs poll this tool to observe whether an owner completed SSO.
+        Making the probe call ``_rest_get`` caused every poll to enter
+        ``reauthenticate`` on a stale cookie, which could repeatedly launch
+        visible Chrome windows. Actual Blackboard operations retain the
+        automatic recovery path in ``_rest_get``.
+
+        Reler ``session.json`` sob rejeição continua permitido: é só disco, sem
+        browser. Com ``_retry_after_reload=False`` (2026-10-22) a bridge seguia
+        dando 401 com um login novo já copiado para o disco até um restart.
+        Os campos de keep-alive deixam o SOBER avisar o dono ANTES de vencer.
+        """
         try:
-            await self._rest_get("/learn/api/v1/users/me")
-        except (AuthenticationRequired, SessionStale) as exc:
-            return {"authenticated": False, "profile": self.settings.profile, "reason": type(exc).__name__}
-        return {"authenticated": True, "profile": self.settings.profile}
+            await self._session.get("/learn/api/v1/users/me")
+        except (SessionStale, BlackboardRequestRejected) as exc:
+            status = {"authenticated": False, "profile": self.settings.profile, "reason": type(exc).__name__}
+        else:
+            status = {"authenticated": True, "profile": self.settings.profile}
+        return {**status, **self._keepalive_status()}
+
+    def _keepalive_status(self) -> dict[str, Any]:
+        """Lido DEPOIS da chamada: uma rotação ou recarga muda `expires_at`."""
+        health = self._session.keepalive
+        return {
+            "expires_at": self._session.expires_at,
+            "last_keepalive_ok_at": health.last_ok_at,
+            "keepalive_failing": self._session.keepalive_failing(),
+            "keepalive_consecutive_failures": health.consecutive_failures,
+            "last_keepalive_failure_class": health.last_failure_class,
+        }
 
     async def list_terms(self) -> list[str]:
         """List the terms exposed by the Ultra course filter without selecting one."""

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import os
 import stat
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import uvicorn
 
-from .session import BlackboardSession, SessionStale
+from .session import BlackboardRequestRejected, BlackboardSession, SessionStale
 
 ASGIApp = Callable[[dict[str, Any], Callable[[], Awaitable[dict[str, Any]]], Callable[[dict[str, Any]], Awaitable[None]]], Awaitable[None]]
 
@@ -21,28 +23,72 @@ ASGIApp = Callable[[dict[str, Any], Callable[[], Awaitable[dict[str, Any]]], Cal
 # ping is missed; the call itself rotates BbRouter with a fresh `expires`.
 KEEPALIVE_PATH = "/learn/api/v1/utilities/timeUntilBbSessionInactive"
 DEFAULT_KEEPALIVE_INTERVAL_S = 1200.0
+# Depois de uma falha, re-tenta mais cedo: em 2026-10-20 um dia de WARP/DNS
+# instável bastou para 8 h sem ping bem-sucedido com o intervalo fixo de 20 min.
+KEEPALIVE_RETRY_INTERVAL_S = 300.0
+
+logger = logging.getLogger("blackboard_mcp.keepalive")
+
+
+def _remaining(session: BlackboardSession, now: float) -> str:
+    expires_at = session.expires_at
+    return "desconhecido" if expires_at is None else f"{int((expires_at - now) // 60)}min"
 
 
 async def keepalive_ping(session: BlackboardSession) -> bool:
-    """Renew the session's inactivity window; never raises. False = no session yet or rejected."""
-    if not session.configured:
-        return False
+    """Renew the session's inactivity window; never raises. False = no session yet or rejected.
+
+    Cada falha fica em `session.keepalive` e no log, com a classe (rede ×
+    sessão recusada) e o tempo restante da sessão — nunca o valor do cookie.
+    """
+    health = session.keepalive
     try:
+        if not session.configured and not session.reload_from_disk():
+            raise SessionStale("sessao nao configurada")
         await session.get(KEEPALIVE_PATH, {"forceLogout": "false"})
-        return True
-    except SessionStale:
-        # A real read will surface a clear re-login error to the owner;
-        # the keep-alive loop just stops helping until that happens.
+    except Exception as exc:
+        # SessionStale: `get` já releu o disco antes de desistir, então um
+        # login novo copiado para cá é pego no próximo ping. Qualquer outra
+        # coisa (WARP, DNS, ...) é tratada como rede e re-tentada.
+        failure_class = (
+            "session_stale" if isinstance(exc, SessionStale)
+            else "rejected" if isinstance(exc, BlackboardRequestRejected)
+            else "network"
+        )
+        now = time.time()
+        health.last_failure_at = now
+        health.last_failure_class = failure_class
+        health.consecutive_failures += 1
+        logger.warning(
+            "keepalive falhou: classe=%s erro=%s falhas_seguidas=%d sessao_restante=%s",
+            failure_class, type(exc).__name__, health.consecutive_failures, _remaining(session, now),
+        )
+        if session.keepalive_failing(now):
+            logger.error(
+                "keepalive: sessao Blackboard vence em %s e os pings estao falhando; "
+                "o dono precisa refazer o login", _remaining(session, now),
+            )
         return False
-    except Exception:
-        # Network blip (WARP, DNS, ...). Try again next interval.
-        return False
+    now = time.time()
+    if health.consecutive_failures:
+        logger.warning(
+            "keepalive recuperado apos %d falha(s); sessao_restante=%s",
+            health.consecutive_failures, _remaining(session, now),
+        )
+    health.last_ok_at = now
+    health.consecutive_failures = 0
+    return True
 
 
-async def _keepalive_loop(session: BlackboardSession, interval_s: float) -> None:
+async def _keepalive_loop(
+    session: BlackboardSession,
+    interval_s: float,
+    retry_interval_s: float = KEEPALIVE_RETRY_INTERVAL_S,
+) -> None:
+    delay = interval_s
     while True:
-        await asyncio.sleep(interval_s)
-        await keepalive_ping(session)
+        await asyncio.sleep(delay)
+        delay = interval_s if await keepalive_ping(session) else min(retry_interval_s, interval_s)
 
 
 class BridgeAuth:
