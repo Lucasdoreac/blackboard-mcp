@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 # Institução padrão deste repositório: a UDF (Blackboard hospedado no Cruzeiro
@@ -79,6 +80,21 @@ def resolve_chrome_path() -> str:
     return "/usr/bin/google-chrome"
 
 
+def normalize_base_url(value: str) -> str:
+    """Só a origem (`https://host`): o código acrescenta `/ultra/course` e `/learn/api/...`.
+
+    Quem cola o endereço da página aberta (`https://host/ultra/course`) gravava o caminho
+    junto, e toda chamada saía em `/ultra/course/learn/api/...`: o Blackboard devolve HTML,
+    e a prova de sessão lia isso como "sessão vencida" — o login nunca confirmava. Valor sem
+    esquema ou host fica como veio (sem a barra final) para `login_url` recusá-lo.
+    """
+    text = str(value).strip()
+    parsed = urlparse(text)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".lower()
+    return text.rstrip("/")
+
+
 @dataclass(frozen=True)
 class Settings:
     profile: str
@@ -106,7 +122,7 @@ class Settings:
         base_url = env_base_url or persisted.get("base_url") or DEFAULT_BASE_URL
         return cls(
             profile=profile,
-            base_url=str(base_url).rstrip("/"),
+            base_url=normalize_base_url(base_url),
             data_home=data_home,
             chrome_path=os.getenv("BLACKBOARD_CHROME_PATH") or resolve_chrome_path(),
         )

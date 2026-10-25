@@ -116,3 +116,38 @@ def test_default_institution_is_the_repository_one_and_setup_or_env_beats_it(
 
     monkeypatch.setenv("BLACKBOARD_BASE_URL", "https://ci.exemplo.edu")
     assert Settings.from_profile("novo").base_url == "https://ci.exemplo.edu"
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "https://bb.suafaculdade.edu.br/ultra/course",
+        "https://bb.suafaculdade.edu.br/ultra/course/",
+        "https://BB.suafaculdade.edu.br/learn/api/v1/users/me?x=1#frag",
+        "https://bb.suafaculdade.edu.br/",
+    ],
+)
+def test_base_url_keeps_only_the_origin(
+    typed: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REVERT-CHECK: com o caminho junto, as chamadas saíam em /ultra/course/learn/api/...,
+    o Blackboard devolvia HTML e o login nunca confirmava (achado ao vivo, 2026-10-24)."""
+    monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
+    monkeypatch.delenv("BLACKBOARD_BASE_URL", raising=False)
+    save_profile_config(tmp_path, "maria", {"base_url": typed})
+    settings = Settings.from_profile("maria")
+    assert settings.base_url == "https://bb.suafaculdade.edu.br"
+    assert BlackboardClient(settings).login_url() == "https://bb.suafaculdade.edu.br/ultra/course"
+
+
+def test_base_url_from_env_is_normalized_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BLACKBOARD_MCP_HOME", str(tmp_path))
+    monkeypatch.setenv("BLACKBOARD_BASE_URL", "https://bb.suafaculdade.edu.br/ultra/institution-page")
+    assert Settings.from_profile("maria").base_url == "https://bb.suafaculdade.edu.br"
+
+
+def test_setup_prompt_saves_only_the_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from blackboard_mcp import cli
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "bb.suafaculdade.edu.br/ultra/course")
+    assert cli._prompt_base_url() == "https://bb.suafaculdade.edu.br"

@@ -23,6 +23,9 @@ from .session import BlackboardRequestRejected, BlackboardSession, SessionStale
 # Cabe dentro do timeout de 90s que o watchdog do SOBER dá à bridge (auth_status).
 AUTO_REAUTH_TIMEOUT_S = 75.0
 RECOVERY_BROWSER_START_TIMEOUT_S = 10.0
+# Sem alcançar o Chrome por este tempo, `complete_login` desiste e diz o motivo, em vez de
+# esperar os 10 minutos em silêncio (janela fechada, ou Chrome que nunca subiu).
+BROWSER_UNREACHABLE_AFTER_S = 45.0
 
 # Fluxo SSO medido no portal Cruzeiro: não envia credencial, OTP ou cookie.
 # Ele apenas aciona as transições públicas que o próprio aluno acabou de usar;
@@ -221,6 +224,7 @@ class BlackboardClient:
         interval_s: float = 3,
         on_progress: Callable[[str], None] | None = None,
         open_login_tab: bool = False,
+        unreachable_after_s: float = BROWSER_UNREACHABLE_AFTER_S,
     ) -> dict[str, Any]:
         """Mesmo formato do `nlm login`: espera o dono concluir o login na janela
         CDP, captura o cookie UMA vez, prova por REST e só então grava
@@ -240,6 +244,7 @@ class BlackboardClient:
         hinted_host: str | None = None
         browser = None
         opened_page = None
+        last_reached = started
         playwright = await async_playwright().start()
         try:
             while loop.time() < deadline:
@@ -250,6 +255,11 @@ class BlackboardClient:
                         )
                     except Exception:
                         browser = None
+                if browser is not None:
+                    last_reached = loop.time()
+                elif loop.time() - last_reached >= unreachable_after_s:
+                    return {"authenticated": False, "profile": self.settings.profile,
+                            "reason": "browser_unavailable"}
                 if browser is not None and browser.contexts:
                     context = browser.contexts[0]
                     pages = list(context.pages)

@@ -212,3 +212,18 @@ async def test_login_closes_only_the_recovery_browser_it_started(tmp_path: Path,
     assert result["authenticated"] is True
     playwright.chromium.connect_over_cdp.return_value.close.assert_awaited_once()
     assert client._owns_recovery_browser is False
+
+
+@pytest.mark.asyncio
+async def test_gives_up_with_a_reason_when_chrome_never_becomes_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REVERT-CHECK: sem o limite, a janela fechada deixava o comando esperando 10 minutos em
+    silêncio (achado ao vivo, 2026-10-24: 272 s de 'ainda aguardando o login...')."""
+    client = _client(tmp_path)
+    playwright = _fake_playwright(monkeypatch, [[ULTRA]])
+    playwright.chromium.connect_over_cdp = AsyncMock(side_effect=ConnectionError("recusada"))
+
+    result = await client.complete_login(timeout_s=30, interval_s=0.01, unreachable_after_s=0.05)
+
+    assert result == {"authenticated": False, "profile": client.settings.profile, "reason": "browser_unavailable"}

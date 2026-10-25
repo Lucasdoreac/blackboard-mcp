@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .client import BlackboardClient
-from .config import Settings, save_profile_config
+from .config import Settings, normalize_base_url, save_profile_config
 from .server import create_server
 from .session import session_path
 
@@ -45,7 +45,7 @@ def _prompt_base_url() -> str:
         if parsed.scheme != "https" or not parsed.netloc:
             print("  Nao parece uma URL valida. Tente algo como https://bb.suafaculdade.edu")
             continue
-        return raw.rstrip("/")
+        return normalize_base_url(raw)
 
 
 def _prompt_profile(default: str) -> str:
@@ -69,8 +69,14 @@ def _run_login(profile: str) -> bool:
     result = asyncio.run(client.complete_login(on_progress=lambda msg: print(f"  {msg}")))
     if result.get("authenticated"):
         print(f"\nLogin confirmado e sessao gravada para o perfil '{profile}'.")
-        print("Pode fechar o Chrome: a bridge usa a sessao gravada e a mantem viva.")
+        print("Deixe esta janela do Chrome aberta: courses, tree e as demais leituras de pagina usam a sessao dela (ao fechar, o cookie de sessao do Blackboard some).")
         return True
+    if result.get("reason") == "browser_unavailable":
+        print("\nNao consegui falar com o Chrome do login (ele fechou ou nao abriu).")
+        print(f"Se o login ja tinha sido confirmado, confira com: uv run blackboard-mcp auth-status --profile {profile}")
+        print("Senao, rode de novo e deixe a janela aberta ate aparecer 'Login confirmado':")
+        print(f"  uv run blackboard-mcp login --profile {profile}")
+        return False
     print("\nNao detectei o login a tempo. Rode de novo:")
     print(f"  uv run blackboard-mcp login --profile {profile}")
     return False
