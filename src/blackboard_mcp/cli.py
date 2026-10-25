@@ -69,7 +69,7 @@ def _run_login(profile: str) -> bool:
     result = asyncio.run(client.complete_login(on_progress=lambda msg: print(f"  {msg}")))
     if result.get("authenticated"):
         print(f"\nLogin confirmado e sessao gravada para o perfil '{profile}'.")
-        print("Pode fechar o Chrome: a bridge usa a sessao gravada e a mantem viva.")
+        print("Deixe esta janela do Chrome aberta: courses, tree e as demais leituras de pagina usam a sessao dela (ao fechar, o cookie de sessao do Blackboard some).")
         return True
     if result.get("reason") == "browser_unavailable":
         print("\nNao consegui falar com o Chrome do login (ele fechou ou nao abriu).")
