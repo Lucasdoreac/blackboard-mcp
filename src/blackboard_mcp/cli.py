@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .client import BlackboardClient
-from .config import Settings, save_profile_config
+from .config import Settings, normalize_base_url, save_profile_config
 from .server import create_server
 from .session import session_path
 
@@ -45,7 +45,7 @@ def _prompt_base_url() -> str:
         if parsed.scheme != "https" or not parsed.netloc:
             print("  Nao parece uma URL valida. Tente algo como https://bb.suafaculdade.edu")
             continue
-        return raw.rstrip("/")
+        return normalize_base_url(raw)
 
 
 def _prompt_profile(default: str) -> str:
