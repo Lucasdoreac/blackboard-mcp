@@ -16,6 +16,7 @@ import httpx
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .config import Settings
+from .courses_rest import course_rows, is_course, term_ids, term_names
 from .content_tree import is_container, normalize_tree_row
 from .session import BlackboardRequestRejected, BlackboardSession, SessionStale
 
@@ -523,7 +524,33 @@ class BlackboardClient:
             "last_keepalive_failure_class": health.last_failure_class,
         }
 
+    async def _rest_memberships(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for page in range(20):  # 4.000 matrículas: muito além de qualquer aluno
+            data = await self._rest_get(
+                "/learn/api/v1/users/me/memberships",
+                {"expand": "course", "limit": "200", "offset": str(page * 200)},
+            )
+            batch = data.get("results", []) if isinstance(data, dict) else []
+            if not isinstance(batch, list):
+                raise RuntimeError("as matriculas nao carregaram no formato esperado")
+            rows.extend(batch)
+            if len(batch) < 200:
+                break
+        return rows
+
+    async def _rest_terms(self, ids: set[str]) -> dict[str, dict[str, Any]]:
+        found = await asyncio.gather(*(self._rest_get(f"/learn/api/v1/terms/{tid}") for tid in sorted(ids)))
+        return {tid: term for tid, term in zip(sorted(ids), found) if isinstance(term, dict)}
+
     async def list_terms(self) -> list[str]:
+        """Semestres das suas disciplinas, do mais recente ao mais antigo (REST, sem navegador)."""
+        memberships = await self._rest_memberships()
+        if not any(is_course(m) for m in memberships):
+            return await self._list_terms_from_page()
+        return term_names(await self._rest_terms(term_ids(memberships)))
+
+    async def _list_terms_from_page(self) -> list[str]:
         """List the terms exposed by the Ultra course filter without selecting one."""
         playwright, context, page, attached = await self._authenticated_page()
         try:
@@ -541,7 +568,18 @@ class BlackboardClient:
             await self._close(playwright, context, attached=attached)
 
     async def list_courses(self, term: str | None = None) -> list[dict[str, str]]:
-        """Read the Ultra course cards; public REST needs a separate app credential."""
+        """Disciplinas pela REST interna com o `session.json` (sem Chrome aberto).
+
+        Sem `term`, as do semestre mais recente; inclui as que os cartões do Ultra escondem. Só se
+        a REST não devolver nenhuma disciplina é que cai na leitura da página (o caminho antigo).
+        """
+        memberships = await self._rest_memberships()
+        if not any(is_course(m) for m in memberships):
+            return await self._list_courses_from_page(term)
+        return course_rows(memberships, await self._rest_terms(term_ids(memberships)), term)
+
+    async def _list_courses_from_page(self, term: str | None = None) -> list[dict[str, str]]:
+        """Read the Ultra course cards (fallback): needs a live Chrome session."""
         playwright, context, page, attached = await self._authenticated_page()
         try:
             if term:
