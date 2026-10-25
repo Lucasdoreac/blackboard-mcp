@@ -71,6 +71,12 @@ def _run_login(profile: str) -> bool:
         print(f"\nLogin confirmado e sessao gravada para o perfil '{profile}'.")
         print("Pode fechar o Chrome: a bridge usa a sessao gravada e a mantem viva.")
         return True
+    if result.get("reason") == "browser_unavailable":
+        print("\nNao consegui falar com o Chrome do login (ele fechou ou nao abriu).")
+        print(f"Se o login ja tinha sido confirmado, confira com: uv run blackboard-mcp auth-status --profile {profile}")
+        print("Senao, rode de novo e deixe a janela aberta ate aparecer 'Login confirmado':")
+        print(f"  uv run blackboard-mcp login --profile {profile}")
+        return False
     print("\nNao detectei o login a tempo. Rode de novo:")
     print(f"  uv run blackboard-mcp login --profile {profile}")
     return False
