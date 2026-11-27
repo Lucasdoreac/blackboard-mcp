@@ -31,7 +31,7 @@ def test_serve_http_initializes_settings_from_module_scope(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "Settings", FakeSettings)
     monkeypatch.setattr(cli, "BlackboardClient", FakeClient)
-    monkeypatch.setattr(cli, "create_server", lambda profile, client: {"profile": profile, "client": client})
+    monkeypatch.setattr(cli, "create_server", lambda profile, client, **kw: {"profile": profile, "client": client, **kw})
     monkeypatch.setattr(bridge_module, "serve_unix_socket", fake_serve_unix_socket)
     monkeypatch.setenv("BLACKBOARD_BRIDGE_KEY", "test-key")
     monkeypatch.setattr(
@@ -46,3 +46,5 @@ def test_serve_http_initializes_settings_from_module_scope(monkeypatch) -> None:
     # keep-alive e outra dentro do cliente das tools. O keep-alive relia o
     # disco e se curava; `auth_status` seguia com o cookie morto até restart.
     assert served["session"] is served["mcp"]["client"].session
+
+    assert served["mcp"]["allow_writes"] is False
