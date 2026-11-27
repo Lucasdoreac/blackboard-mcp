@@ -1,25 +1,11 @@
-"""Grava o que o navegador faz durante um envio MANUAL, para aprender o contrato.
+"""Metadados de escritas observadas: não registra valores de conteúdo privado.
 
-Por que existe (2026-09-16): o projeto é read-only e não sabe enviar atividade.
-Antes de escrever qualquer envio, o contrato precisa ser MEDIDO — descobrir
-endpoint de escrita por tentativa e erro contra uma conta acadêmica real, com
-número limitado de tentativas e `late_attempts_blocked`, pode queimar a entrega
-de alguém sem desfazer.
-
-O jeito seguro é observar: o dono envia à mão, com a janela instrumentada, e
-fica registrado exatamente quais requisições o Ultra fez. Nada aqui envia nada
-— só escuta.
-
-**Nenhum segredo vai para o arquivo.** Cookie, XSRF e afins são substituídos por
-um marcador; o corpo é gravado porque é justamente ele que ensina a forma do
-envio, mas passa pelo mesmo expurgo. Um arquivo de captura precisa poder ser
-lido e colado num PR sem vazar sessão.
+Arquivos antigos de captura podem conter credenciais ou dados acadêmicos;
+não são automaticamente saneados por esta versão.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,67 +17,57 @@ SENSITIVE_HEADERS = frozenset({
 })
 REDACTED = "<redigido>"
 
-# Campos de corpo que parecem credencial ou token.
-_SENSITIVE_KEY_RE = re.compile(
-    r"(xsrf|token|senha|password|secret|cookie|session|authorization|bearer)", re.IGNORECASE
-)
-# Métodos que MUDAM estado — são os que interessam para aprender o envio.
+# Métodos que mudam estado.
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-_MAX_BODY = 20_000
 
 
 def redact_headers(headers: dict[str, str]) -> dict[str, str]:
-    return {
-        nome: (REDACTED if nome.lower() in SENSITIVE_HEADERS else valor)
-        for nome, valor in (headers or {}).items()
-    }
+    # Never retain arbitrary header names or values (custom headers can contain
+    # secrets too). These names alone are useful to reproduce the protocol.
+    known = SENSITIVE_HEADERS | {"content-type", "x-requested-with"}
+    return {name: REDACTED for name in (headers or {}) if name.lower() in known}
 
 
 def redact_body(body: Any) -> Any:
-    """Expurga recursivamente valores de chave sensível, preservando a FORMA.
-
-    A forma é o que ensina o contrato; o valor de um token não ensina nada e
-    não pode sair daqui."""
-    if isinstance(body, dict):
-        return {
-            k: (REDACTED if _SENSITIVE_KEY_RE.search(str(k)) else redact_body(v))
-            for k, v in body.items()
-        }
-    if isinstance(body, list):
-        return [redact_body(item) for item in body]
-    return body
+    # Key names and innocuous-looking fields can themselves contain secrets,
+    # personal data, or submitted answers. Never try to infer safety from keys.
+    return REDACTED
 
 
 def parse_body(raw: str | None) -> Any:
-    """JSON vira estrutura (expurgável); o resto vira texto truncado."""
-    if not raw:
-        return None
-    texto = raw[:_MAX_BODY]
+    return None if raw is None else {"_raw_len": len(raw)}
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    from urllib.parse import urlsplit
+
     try:
-        return redact_body(json.loads(texto))
-    except (ValueError, TypeError):
-        # Multipart de upload entra por aqui: o binário não serve de nada no
-        # registro, mas o tamanho e o tipo sim.
-        return {"_raw_len": len(raw), "_preview": texto[:400]}
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        port = parsed.port
+        return scheme, parsed.hostname.lower(), port if port is not None else (443 if scheme == "https" else 80)
+    except ValueError:
+        return None
+
+
+def same_origin(url: str, base_url: str) -> bool:
+    origin = _origin(base_url)
+    return origin is not None and _origin(url) == origin
 
 
 def record(
     *, method: str, url: str, headers: dict[str, str], body: str | None,
     status: int | None = None, base_url: str = "",
 ) -> dict[str, Any] | None:
-    """Uma linha do registro, ou None quando a requisição não interessa.
-
-    Só requisições de ESCRITA para o próprio Blackboard entram: o resto é ruído
-    de página (estáticos, telemetria, CDN) e encheria o arquivo sem ensinar
-    nada."""
-    if method.upper() not in WRITE_METHODS:
-        return None
-    if base_url and not url.startswith(base_url):
+    """Only same-origin writes; omit paths, query strings and body content."""
+    if method.upper() not in WRITE_METHODS or not same_origin(url, base_url):
         return None
     return {
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
         "method": method.upper(),
-        "url": url,
+        "url": REDACTED,
         "status": status,
         "headers": redact_headers(headers),
         "body": parse_body(body),
@@ -149,6 +125,7 @@ __all__ = [
     "ozone_args",
     "parse_body",
     "record",
+    "same_origin",
     "redact_body",
     "redact_headers",
 ]

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictBool
 
 from .client import BlackboardClient
 from .config import Settings
+from .submitting import safe_id
 
 
-def create_server(profile: str, client: BlackboardClient | None = None) -> FastMCP:
+def create_server(profile: str, client: BlackboardClient | None = None, *, allow_writes: bool = True) -> FastMCP:
     client = client or BlackboardClient(Settings.from_profile(profile))
     server = FastMCP("blackboard-mcp")
 
@@ -102,13 +104,20 @@ def create_server(profile: str, client: BlackboardClient | None = None) -> FastM
     @server.tool()
     async def send_course_message(
         course_id: str, text: str, recipient_ids: list[str] | None = None,
-        conversation_id: str = "", confirm: bool = False,
+        conversation_id: str = "", confirm: StrictBool = False,
     ) -> dict:
         """Send a message in a course's Messages tab. Goes into someone else's
         inbox under the owner's name and CANNOT be undone. Defaults to a DRY
         RUN: with confirm=false nothing is sent and you get the exact text and
         recipients back. Show that preview to the person and only set
         confirm=true after they approve THAT text."""
+        if confirm and not allow_writes:
+            raise PermissionError("escritas desabilitadas nesta bridge")
+        safe_id(course_id)
+        if conversation_id:
+            safe_id(conversation_id)
+        for ident in recipient_ids or []:
+            safe_id(ident)
         return await client.send_course_message(
             course_id, text, recipient_ids=recipient_ids,
             conversation_id=conversation_id, confirm=confirm,
@@ -135,12 +144,16 @@ def create_server(profile: str, client: BlackboardClient | None = None) -> FastM
 
     @server.tool()
     async def submit_assignment(
-        course_id: str, content_id: str, file_path: str, text: str = "", confirm: bool = False
+        course_id: str, content_id: str, file_path: str, text: str = "", confirm: StrictBool = False
     ) -> dict:
         """Submit an assignment attempt with a file. IRREVERSIBLE and consumes
         one attempt. Defaults to a DRY RUN: with confirm=false nothing is
         written and you get the plan plus the current submission state. Only
         set confirm=true after the person explicitly approved THIS submission."""
+        if confirm and not allow_writes:
+            raise PermissionError("escritas desabilitadas nesta bridge")
+        safe_id(course_id)
+        safe_id(content_id)
         return await client.submit_assignment(
             course_id, content_id, file_path, text=text, confirm=confirm
         )

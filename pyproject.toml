@@ -1,7 +1,7 @@
 [project]
 name = "blackboard-mcp"
 version = "0.1.0"
-description = "Local, read-only Blackboard Ultra MCP with browser-backed authentication"
+description = "Local Blackboard Ultra MCP with browser-backed authentication"
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"

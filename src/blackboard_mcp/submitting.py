@@ -35,6 +35,7 @@ O que NÃO é adivinhado: a rota de upload é `/learn/api/v1/files`, e não
 from __future__ import annotations
 
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,13 @@ MAX_MESSAGE_CHARS = 20_000
 
 class SubmissionError(RuntimeError):
     """Falha de envio com mensagem utilizável por quem lê."""
+
+
+def safe_id(value: str) -> str:
+    """Reject path/query injection in a Blackboard identifier before writing."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+        raise SubmissionError("identificador inseguro para escrita")
+    return value
 
 
 def file_part(caminho: Path) -> tuple[str, bytes, str]:
@@ -135,6 +143,8 @@ class SubmissionWriter:
 
     async def start_attempt(self, course_id: str, column_id: str, arquivos: list[dict[str, Any]]) -> dict[str, Any]:
         """Passo 2 — cria a tentativa com o anexo. NÃO envia."""
+        safe_id(course_id)
+        safe_id(column_id)
         return await self._write(
             "POST", f"/learn/api/v1/courses/{course_id}/gradebook/columns/{column_id}/attempts",
             json={"studentSubmissionFiles": arquivos},
@@ -143,6 +153,8 @@ class SubmissionWriter:
     async def save_draft(self, course_id: str, attempt_id: str, arquivos: list[dict[str, Any]],
                          texto: str = "") -> dict[str, Any]:
         """Passo 3 — salva rascunho. NÃO envia."""
+        safe_id(course_id)
+        safe_id(attempt_id)
         corpo: dict[str, Any] = {"studentSubmissionFiles": arquivos}
         if texto:
             corpo["studentSubmission"] = {"rawText": texto}
@@ -157,6 +169,8 @@ class SubmissionWriter:
 
         Separado de `save_draft` de propósito: montar o rascunho e entregar são
         decisões diferentes, e só a segunda é definitiva."""
+        safe_id(course_id)
+        safe_id(attempt_id)
         return await self._write(
             "PATCH", f"/learn/api/v1/courses/{course_id}/gradebook/attempts/{attempt_id}",
             params={"saveBeforeSubmitAndPost": "true"},
@@ -222,8 +236,11 @@ class MessageWriter(SubmissionWriter):
         `notify_by_email` acompanha o que a interface faz: sem ele a mensagem
         entra na caixa do Blackboard sem avisar ninguém, e uma mensagem que o
         professor não vê é o mesmo que não ter mandado."""
+        safe_id(course_id)
         if not recipient_ids:
             raise SubmissionError("sem destinatario — nao mando mensagem para ninguem")
+        for recipient_id in recipient_ids:
+            safe_id(recipient_id)
         return await self._write(
             "POST", f"/learn/api/v1/courses/{course_id}/conversations",
             params={"sendEmailToParticipants": "true" if notify_by_email else "false"},
@@ -239,6 +256,8 @@ class MessageWriter(SubmissionWriter):
         captura cobriu abrir conversa, não responder. A rota segue a simetria
         do resto da API interna e é a melhor hipótese — quem chamar primeiro
         confere por `list_conversations`, nunca pela resposta."""
+        safe_id(course_id)
+        safe_id(conversation_id)
         return await self._write(
             "POST", f"/learn/api/v1/courses/{course_id}/conversations/{conversation_id}/messages",
             json={"body": message_body(texto)},

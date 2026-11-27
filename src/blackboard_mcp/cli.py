@@ -108,6 +108,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--minutes", type=float, default=30.0)
     parser.add_argument("--socket")
     parser.add_argument("--bridge-key-env", default="BLACKBOARD_BRIDGE_KEY")
+    parser.add_argument("--allow-bridge-writes", action="store_true", help="serve-http: permitir envios irreversiveis")
     return parser
 
 
@@ -159,7 +160,7 @@ def main() -> None:
         # jar e o mesmo estado de saúde. Com dois objetos, a recarga de disco
         # feita por um não curava o outro.
         client = BlackboardClient(Settings.from_profile(args.profile))
-        asyncio.run(serve_unix_socket(create_server(args.profile, client), Path(args.socket), key,
+        asyncio.run(serve_unix_socket(create_server(args.profile, client, allow_writes=args.allow_bridge_writes), Path(args.socket), key,
                                       session=client.session))
         return
     client = BlackboardClient(Settings.from_profile(args.profile))
