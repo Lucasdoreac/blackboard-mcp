@@ -1,20 +1,18 @@
 # Blackboard MCP
 
 > Local access to Blackboard Ultra for any MCP-compatible client: reads freely,
-> writes only your assignment submission, and only when you say so.
+> can submit assignments and send course messages, with explicit confirmation.
 
 Deixa um assistente de IA (Claude, Codex ou outro que fale MCP) **ler o seu
 Blackboard** — disciplinas, materiais, atividades, prazos e avisos — para
 você perguntar coisas como *"quais atividades vencem esta semana?"* ou
 *"resume o aviso novo de Cálculo"*.
 
-- **Lê tudo, escreve uma coisa só.** A única escrita é `submit_assignment`:
-  entregar uma atividade. Ela é **inerte por padrão** — sem `confirm=true` ela
-  não manda nada, só mostra o que faria e quantas tentativas restam. Nunca abre
-  tentativa de prova, nunca muda nota, nunca apaga nada.
-  Todo o resto do projeto continua sendo leitura, e isso é garantido por teste:
-  a sessão de leitura não tem método de escrita, que vive numa classe separada
-  (`submitting.SubmissionWriter`).
+- **Leitura e escrita:** `submit_assignment` entrega atividade e
+  `send_course_message` envia mensagem. Ambas são irreversíveis e mostram uma
+  prévia sem escrever por padrão; `confirm=true` permite a escrita. O assistente
+  pode fornecer esse parâmetro: ele não é prova técnica de aprovação humana.
+  Revise e aprove cada envio e confie apenas em clientes MCP autorizados.
 - **Roda no seu computador.** Seu login fica numa pasta só sua; senha, código
   de verificação e cookies nunca são mostrados nem enviados a ninguém.
 - **Nasceu para a UDF** (é o Blackboard que vem configurado por padrão) e
@@ -243,10 +241,13 @@ cd ~/blackboard-mcp && git pull
 
 - Tudo fica em `~/.local/share/blackboard-mcp/`, com permissão só para o seu
   usuário. O perfil é pessoal — não compartilhe essa pasta.
-- Senha, código de verificação, cookies e links temporários de download nunca
-  aparecem na tela, nas respostas ao assistente nem em arquivos do projeto.
-- O acesso é feito pelo próprio navegador logado, como se fosse você navegando.
-  Nada é escrito no Blackboard.
+- A sessão inclui cookies e tokens salvos localmente; proteja o perfil. O
+  assistente recebe os dados consultados e pode enviá-los a seus fornecedores.
+- O acesso usa a sessão do navegador. Enviar atividades e mensagens pode alterar
+  o Blackboard; a confirmação é uma convenção do cliente, não autenticação humana.
+- `capture` registra apenas metadados, sem corpo, caminho, query ou valores de
+  cabeçalhos. Capturas feitas por versões antigas podem conter segredos e dados
+  acadêmicos: revise e elimine-os com segurança, não publique sem revisão.
 - Os materiais baixados ficam no seu computador; o que o assistente faz com as
   respostas depende do assistente que você usa.
 - **Use só com a sua própria conta**, dentro das regras da sua instituição. O
@@ -254,7 +255,9 @@ cd ~/blackboard-mcp && git pull
   ele vê exatamente o que você veria no navegador.
 - `serve` (stdio) é o modo recomendado para assistentes locais. `serve-http`
   existe apenas para uma bridge local por socket Unix autenticado; ele não deve
-  ser exposto na rede.
+  ser exposto na rede. Nela, envios ficam bloqueados por padrão; o operador pode
+  habilitá-los explicitamente com `--allow-bridge-writes`. A chave da bridge
+  autoriza o cliente, mas não comprova aprovação humana para cada envio.
 
 ## Documentação
 
